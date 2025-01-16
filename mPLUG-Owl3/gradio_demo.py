@@ -33,7 +33,7 @@ from modelscope.hub.snapshot_download import snapshot_download
 # Argparser
 parser = argparse.ArgumentParser(description='demo')
 parser.add_argument('--device', type=str, default='cuda', help='cuda or mps')
-parser.add_argument('--model_dir', type=str, default='./iic/mPLUG-Owl3-7B-240728')
+parser.add_argument('--model_dir', type=str, default='./iic/mPLUG-Owl3-7B-241101')
 parser.add_argument("--host", type=str, default="0.0.0.0")
 parser.add_argument("--port", type=int, default=27123)
 args = parser.parse_args()
@@ -447,8 +447,7 @@ introduction = """
 ## 
 Github: 
 [mPLUG-Owl](https://github.com/X-PLUG/mPLUG-Owl)
-Checkpoint: 
-[mPLUG-Owl3-7B-240728](https://huggingface.co/mPLUG/mPLUG-Owl3-7B-240728)
+
 Paper: 
 [mPLUG-Owl3: Towards Long Image-Sequence Understanding in Multi-Modal Large Language Models
 ](https://arxiv.org/abs/2408.04840)

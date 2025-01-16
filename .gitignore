@@ -33,3 +33,7 @@ evalcap
 dataset/*.bin
 dataset/*.idx
 test.ipynb
+
+mPLUG-Owl3/iic/mPLUG-Owl3-7B-240728/
+*.png
+*.csv
