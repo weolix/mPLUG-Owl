@@ -2,7 +2,7 @@ import torch, sys, transformers
 import torch.nn as nn
 from typing import List, Optional, Tuple, Union
 from swin_backbone import swin_3d_tiny as quality_backbone
-from swin_backbone import get_spatial_fragments
+
 from decord import VideoReader, cpu
 from PIL import Image
 from torchvision import transforms
@@ -18,27 +18,8 @@ from transformers.modeling_outputs import (
     CausalLMOutputWithPast,
 )
 
-MAX_NUM_FRAMES = 32
 model_path = "iic/mPLUG-Owl3-7B-241101"
-dev = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
-
-
-def encode_video(video_path, num_frames=32):
-    def uniform_sample(l, n):
-        gap = len(l) / n
-        idxs = [int(i * gap + gap / 2) for i in range(n)]
-        return [l[i] for i in idxs]
-
-    vr = VideoReader(video_path, ctx=cpu(0))
-
-    sample_fps = max(len(vr) // num_frames, 1)
-    frame_idx = [i for i in range(0, len(vr), sample_fps)]
-    if len(frame_idx) > MAX_NUM_FRAMES:
-        frame_idx = uniform_sample(frame_idx, MAX_NUM_FRAMES)
-    frames = vr.get_batch(frame_idx).asnumpy()
-    frames = [Image.fromarray(v.astype("uint8")) for v in frames]
-    print("num frames:", len(frames))
-    return frames
+dev = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
 
 class QualityOwl3Model(nn.Module):
@@ -370,15 +351,17 @@ class QualityOwl3Model(nn.Module):
 
     def forward(
         self,
-        videos=None,
-        qvideos=None,
+        aesthetic=None,
+        technical=None,
         labels=None,
+        **args,
     ):
-
-        inputs = self.processor(self.msg, images=None, videos=videos, preface=True).to(dev)
+        if not isinstance(aesthetic[0], list):
+            aesthetic = [aesthetic]
+        inputs = self.processor(self.msg, images=None, videos=aesthetic, preface=True).to(dev)
 
         # 处理质量评估视频特征
-        quality_features = self.quality_encoder(qvideos.unsqueeze(0))
+        quality_features = self.quality_encoder(technical.unsqueeze(0).to(dev))
         qf = rearrange(quality_features, "n c d h w -> (n d) (h w) c")
         quality_embed = self.quality2text_model(qf).bfloat16()
 
@@ -399,17 +382,15 @@ class QualityOwl3Model(nn.Module):
 
 
 if __name__ == "__main__":
-    vids = ["/home/ippl/xxr/datasets/MaxWell/0049.mp4"]
-    img_lists = [encode_video(vid) for vid in vids]
-    video = torch.stack(
-        [transforms.ToTensor()(frame) for frame in img_lists[0]]
-    )  # [T, C, H, W]
-    video = video.permute(1, 0, 2, 3)  # Add batch dimension: [C, T, H, W]
-    qvideo = get_spatial_fragments(video, aligned=8).to(dev)
-    v = {"videos": [img_list[::2] for img_list in img_lists], "qvideos": qvideo}
+
+    from dataset import ViewDecompositionDataset
+
+    import yaml
+    opt = yaml.safe_load(open("data.yml"))
+    d = ViewDecompositionDataset(opt["val"])
 
     m = QualityOwl3Model().to(dev)
     m.eval()
     with torch.no_grad():
-        outputs = m(**v)
+        outputs = m(**d[0])
     print(outputs)

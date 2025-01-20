@@ -1,0 +1,84 @@
+
+train:
+    weight: 0.598
+    phase: train
+    anno_file: /home/ippl/xxr/maxvqa/ExplainableVQA/examplar_data_labels/LSVQ/train_labels.txt
+    data_prefix: /home/ippl/datasets/LSVQ/videos
+    # sample_types:
+    #     technical:
+    #         fragments_h: 7
+    #         fragments_w: 7
+    #         fsize_h: 32
+    #         fsize_w: 32
+    #         aligned: 16
+    #         clip_len: 64
+    #         frame_interval: 2
+    #         t_frag: 32
+    #         num_clips: 1
+    #     aesthetic:
+    #         size_h: 224
+    #         size_w: 224
+    #         clip_len: 32
+    #         frame_interval: 2
+    #         t_frag: 32
+    #         num_clips: 1  
+    sample_types:
+        technical:
+            fragments_h: 7
+            fragments_w: 7
+            fsize_h: 32
+            fsize_w: 32
+            aligned: 16
+            clip_len: 32
+            frame_interval: 2
+            t_frag: 8
+            num_clips: 1
+        aesthetic:
+            size_h: 224
+            size_w: 224
+            clip_len: 16
+            frame_interval: 2
+            t_frag: 8
+            num_clips: 1  
+                
+val:
+    weight: 0.598
+    phase: test
+    anno_file: /home/ippl/xxr/maxvqa/ExplainableVQA/examplar_data_labels/LSVQ/test_labels.txt
+    data_prefix: /home/ippl/datasets/LSVQ/videos
+    # sample_types:
+    #     technical:
+    #         fragments_h: 7
+    #         fragments_w: 7
+    #         fsize_h: 32
+    #         fsize_w: 32
+    #         aligned: 16
+    #         clip_len: 64
+    #         frame_interval: 2
+    #         t_frag: 32
+    #         num_clips: 1
+    #     aesthetic:
+    #         size_h: 224
+    #         size_w: 224
+    #         clip_len: 32
+    #         frame_interval: 2
+    #         t_frag: 32
+    #         num_clips: 1  
+    sample_types:
+        technical:
+            fragments_h: 7
+            fragments_w: 7
+            fsize_h: 32
+            fsize_w: 32
+            aligned: 16
+            clip_len: 32
+            frame_interval: 2
+            t_frag: 8
+            num_clips: 1
+        aesthetic:
+            size_h: 224
+            size_w: 224
+            clip_len: 16
+            frame_interval: 2
+            t_frag: 8
+            num_clips: 1  
