@@ -28,7 +28,7 @@ label_path = {"kadid10k":"/home/ippl/zach/workspace/ntire/data/kadid10k/dmos.csv
               }
 
 model_path = "iic/mPLUG-Owl3-7B-241101"
-device = "cuda:2"
+device = "cuda:1"
 
 # TODO 测试完善init函数加载数据
 class spaq(torch.utils.data.Dataset):
@@ -290,35 +290,35 @@ class MLP(nn.Module):
         return x
 
 def main():
-    num_logits = 15
-    # spaq_set = spaq(data_path["spaq"], label_path["spaq"])
+    os.chdir("exps")
+    num_logits = 150
+    spaq_set = spaq(data_path["spaq"], label_path["spaq"])
     kadid10k_set = kadid10k(data_path["kadid10k"], label_path["kadid10k"])
     # kadid10k_smallset = kadid10k(data_path["kadid10k"], "kadid10k/kadid2.2-2.3.xlsx", )
-    # koniq10k_set = koniq10k(data_path["koniq10k"], label_path["koniq10k"])
+    koniq10k_set = koniq10k(data_path["koniq10k"], label_path["koniq10k"])
     # koniq10k_smallset = koniq10k(data_path["koniq10k"], "koniq10k/koniq3.4-3.7.csv")
 
-    # os.chdir("exps")
     # # fit linear
     # linear = nn.Linear(num_logits, 1) 
-    # logits= torch.load("kadid10k/logits.pth")
-    # fit_linear(logits, linear, kadid10k_set, num_logits, lr=1e-3, workspace="kadid10k")
+    # logits,_= torch.load("spaq/logits_dict.pth")
+    # fit_linear(logits, linear, spaq_set, num_logits, lr=1e-3, workspace="spaq")
 
-    # get logits
-    owl3 = Owl3logits(model_path)
-    logits_idc = owl3.get_batch_logits(list_path(data_path["koniq10k"], label_path["koniq10k"]))
-    torch.save(logits_idc, "kadid10k/logits_discribe.pth")
-
-    # # get logits with indices
-    # indices = torch.load("kadid10k/ip_indices.pth")
+    # # get logits
     # owl3 = Owl3logits(model_path)
-    # logits = owl3.get_logits_with_indices(indices, list_path(data_path["kadid10k"], "kadid10k/kadid2.2-2.3.xlsx"))
-    # torch.save(logits, "logits_small_ip.pth")
+    # logits_idc = owl3.get_batch_logits(list_path(data_path["koniq10k"], label_path["koniq10k"]))
+    # torch.save(logits_idc, "kadid10k/logits_discribe.pth")
 
-    # # test cross spaq
-    # linear = nn.Linear(num_logits, 1, device=device)
-    # linear.load_state_dict(torch.load("koniq10k/linear300_0.9384.pth"))
-    # logits = torch.load("koniq10k/logits.pth")
-    # test_cross(linear, logits, koniq10k_set, num_logits)
+    # get logits with indices
+    indices = torch.load("kadid10k/ip_indices.pth")
+    owl3 = Owl3logits(model_path)
+    logits = owl3.get_logits_with_indices(indices, list_path(data_path["kadid10k"], "kadid10k/kadid2.2-2.3.xlsx"))
+    torch.save(logits, "logits_small_ip.pth")
+
+    # test cross spaq
+    linear = nn.Linear(num_logits, 1, device=device)
+    linear.load_state_dict(torch.load("spaq/linear150_0.9370.pth"))
+    logits, _ = torch.load("koniq10k/logits_dict.pth")
+    test_cross(linear, logits, koniq10k_set, num_logits)
 
     # # fit attention in kadid10k
     # logits = torch.load("logits.pth")
