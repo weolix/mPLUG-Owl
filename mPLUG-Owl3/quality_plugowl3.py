@@ -25,6 +25,7 @@ dev = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 class QualityOwl3Model(nn.Module):
     def __init__(
         self,
+        tech_brance=True
     ):
         super().__init__()
 
@@ -32,7 +33,8 @@ class QualityOwl3Model(nn.Module):
         config = transformers.AutoConfig.from_pretrained(
             model_path, trust_remote_code=True
         )
-        config.hyper_layers.append(27)
+        if tech_brance:
+            config.hyper_layers.append(27)
         self.LLM = transformers.AutoModel.from_pretrained(
             model_path,
             config=config,
@@ -49,14 +51,6 @@ class QualityOwl3Model(nn.Module):
             nn.GELU(),
             nn.Linear(self.LLM.embed_dim, self.LLM.embed_dim),
         )
-
-        self.msg = [
-            {
-                "role": "user",
-                "content": """"<|video|>"Analize from details, how would you rate the quality of this image?""",
-            },
-            {"role": "assistant", "content": "The quality of the image is very"},
-        ]
 
     def HyperQwen2Model_forward(
         self,
@@ -358,7 +352,14 @@ class QualityOwl3Model(nn.Module):
     ):
         if not isinstance(aesthetic[0], list):
             aesthetic = [aesthetic]
-        inputs = self.processor(self.msg, images=None, videos=aesthetic, preface=True).to(dev)
+        msg = [
+            {
+                "role": "user",
+                "content": """"<|video|>"Analize from details, how would you rate the quality of this image?""",
+            },
+            {"role": "assistant", "content": "The quality of the image is very"},
+        ]
+        inputs = self.processor(msg, images=None, videos=aesthetic, preface=True).to(dev)
 
         # 处理质量评估视频特征
         quality_features = self.quality_encoder(technical.unsqueeze(0).to(dev))
@@ -378,19 +379,34 @@ class QualityOwl3Model(nn.Module):
         )
         ####### over ### self.LLM.language_model ##### class HyperQwen2ForCausalLM ###########
 
-        return self.tokenizer.decode(torch.topk(outputs.logits[0, -1], k=50).indices)
+        return outputs.logits
 
 
 if __name__ == "__main__":
 
-    from dataset import ViewDecompositionDataset
-
     import yaml
+    import tqdm
+    from exps.fitting import Owl3logits, fit_linear, list_path
+    from dataset import ViewDecompositionDataset, dict_simply_collate
+
     opt = yaml.safe_load(open("data.yml"))
     d = ViewDecompositionDataset(opt["val"])
-
-    m = QualityOwl3Model().to(dev)
-    m.eval()
+    dl = torch.utils.data.DataLoader(d, batch_size=1, shuffle=False, collate_fn=dict_simply_collate)
+    model = QualityOwl3Model(tech_brance=False).to(dev)
+    logits=[]
+    names=[]
     with torch.no_grad():
-        outputs = m(**d[0])
-    print(outputs)
+        for data in tqdm.tqdm(d):
+            o = model.forward(**data)
+            name = data["name"]
+            names.append(name)
+            logits.append(o[0,-1].cpu())
+    logits_all = torch.stack(logits)
+    lmax = torch.max(logits_all, dim=0)
+    top300max = torch.topk(lmax.values, 300, dim=-1)
+    logits_top300 = logits_all[:,top300max.indices]
+    logits_dict = {}
+    for i, img in enumerate(names):
+        logits_dict[img] = logits_top300[i]
+    torch.save(logits, "logits_lsvq.pt")
+    torch.save(top300max.indices, "indices_lsvq.pt")

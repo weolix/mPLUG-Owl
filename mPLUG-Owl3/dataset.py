@@ -10,6 +10,7 @@ from PIL import Image
 import cv2
 import decord
 import numpy as np
+from regex import T
 import skvideo.io
 import torch
 import torchvision
@@ -443,10 +444,10 @@ class ViewDecompositionDataset(torch.utils.data.Dataset):
                 3, 0, 1, 2
             )
 
-        data["num_clips"] = {}
-        for stype, sopt in self.sample_types.items():
-            data["num_clips"][stype] = sopt["num_clips"]
-        data["frame_inds"] = frame_inds
+        # data["num_clips"] = {}
+        # for stype, sopt in self.sample_types.items():
+        #     data["num_clips"][stype] = sopt["num_clips"]
+        # data["frame_inds"] = frame_inds
         data["gt_label"] = label
         data["name"] = filename  # osp.basename(video_info["filename"])
 
@@ -456,9 +457,21 @@ class ViewDecompositionDataset(torch.utils.data.Dataset):
         return len(self.video_infos)
 
 
+def dict_simply_collate(batch):
+    keys = batch[0].keys()
+    data = {}
+    for k in keys:
+        data[k] = [b[k] for b in batch]
+
+    return data
+
+
 if __name__ == "__main__":
     import yaml
     opt = yaml.safe_load(open("data.yml"))
-    d = ViewDecompositionDataset(opt["val"])
-    d0 = d[0]
-    print(d0.keys())
+    d = ViewDecompositionDataset(opt["train"])
+    dl = torch.utils.data.DataLoader(d, batch_size=2, collate_fn=dict_simply_collate,shuffle=True)
+    for batch in dl:
+        print(batch)
+        print(batch.keys())
+        break

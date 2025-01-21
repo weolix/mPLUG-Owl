@@ -106,12 +106,13 @@ class Owl3logits(torch.nn.Module):
         self.processor = self.model.init_processor(self.tokenizer)
     
     @torch.no_grad()
-    def forward(self, img: Image, token_with_very = False) -> torch.Tensor:
+    def forward(self, img=None, video=None, token_with_very = False) -> torch.Tensor:
+        media_token = "<|image|>" if img is not None else "<|video|>"
         if token_with_very:
             msg = [
                 {
                     "role": "user",
-                    "content": """<|image|>Analize from details, how would you rate the quality of this image?""",
+                    "content": f"""{media_token}Analize from details, how would you rate the quality of this image?""",
                 },
                 {"role": "assistant", "content": "The quality of the image is very"},
             ]
@@ -119,11 +120,11 @@ class Owl3logits(torch.nn.Module):
             msg = [
                 {
                     "role": "user",
-                    "content": """[mm_media]1[/mm_media]Analize from details, how would you rate the quality of this image?""",
+                    "content": f"""{media_token}Analize from details, how would you rate the quality of this image?""",
                 },
                 {"role": "assistant", "content": "The quality of the image is"},
             ]
-        inputs = self.processor(msg, images=[img], preface=True).to(device)
+        inputs = self.processor(msg, images=[img], video=[video], preface=True).to(device)
         outputs = self.model(**inputs, output_hidden_states=True)
         logits = outputs.logits[:, -1]
         return logits
