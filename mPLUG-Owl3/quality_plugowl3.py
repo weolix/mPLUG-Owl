@@ -1,7 +1,7 @@
 import torch, sys, transformers
 import torch.nn as nn
 from typing import List, Optional, Tuple, Union
-from swin_backbone import swin_3d_tiny as quality_backbone
+from swin_backbone import SwinTransformer3D as quality_backbone
 
 from decord import VideoReader, cpu
 from PIL import Image
@@ -19,7 +19,7 @@ from transformers.modeling_outputs import (
 )
 
 model_path = "iic/mPLUG-Owl3-7B-241101"
-dev = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+
 
 
 class QualityOwl3Model(nn.Module):
@@ -35,6 +35,7 @@ class QualityOwl3Model(nn.Module):
         )
         if tech_brance:
             config.hyper_layers.append(27)
+
         self.LLM = transformers.AutoModel.from_pretrained(
             model_path,
             config=config,
@@ -51,6 +52,23 @@ class QualityOwl3Model(nn.Module):
             nn.GELU(),
             nn.Linear(self.LLM.embed_dim, self.LLM.embed_dim),
         )
+
+        self.load_frozen_state_dict()
+
+
+    def load_frozen_state_dict(self):
+        self.quality_encoder.load_state_dict(torch.load("exps/weights/fragments_model.pth"),strict=True)
+        self.logi_indices = torch.load("exps/lsvq/indices_lsvq.pt")
+        sentiment_weight = torch.load("exps/lsvq/linear300_0.7911.pth")
+        self.linear_sw = nn.Linear(300, 1)
+        self.linear_sw.load_state_dict(sentiment_weight)
+
+        self.quality_encoder.requires_grad_(False)
+        self.LLM.requires_grad_(False)
+        self.LLM.language_model.model.layers[26].self_attn.v_kv_proj.requires_grad_(True)
+        self.quality2text_model.requires_grad_(True)
+
+
 
     def HyperQwen2Model_forward(
         self,
@@ -317,17 +335,14 @@ class QualityOwl3Model(nn.Module):
         logits = logits.float()
 
         loss = None
+        score = None
         if labels is not None:
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
-            loss_fct = nn.CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
-            shift_labels = shift_labels.view(-1)
-            # Enable model parallelism
-            shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
+            last_logits = logits[..., -1, :].contiguous()
+            top_logits = last_logits[:,self.logi_indices]
+            score = self.linear_sw(top_logits).squeeze(-1)
+            plccloss = self.plcc_loss(score, labels)
+            rankloss = self.rank_loss(score, labels)
+            loss = (plccloss, rankloss, score)
 
         if not return_dict:
             output = (logits,) + outputs[1:]
@@ -343,7 +358,7 @@ class QualityOwl3Model(nn.Module):
 
         return outputs
 
-    def forward(
+    def forward_OLD(
         self,
         aesthetic=None,
         technical=None,
@@ -359,10 +374,10 @@ class QualityOwl3Model(nn.Module):
             },
             {"role": "assistant", "content": "The quality of the image is very"},
         ]
-        inputs = self.processor(msg, images=None, videos=aesthetic, preface=True).to(dev)
+        inputs = self.processor(msg, images=None, videos=aesthetic, preface=True).to(self.dev)
 
         # 处理质量评估视频特征
-        quality_features = self.quality_encoder(technical.unsqueeze(0).to(dev))
+        quality_features = self.quality_encoder(technical.unsqueeze(0).to(self.dev))
         qf = rearrange(quality_features, "n c d h w -> (n d) (h w) c")
         quality_embed = self.quality2text_model(qf).bfloat16()
 
@@ -382,25 +397,96 @@ class QualityOwl3Model(nn.Module):
         return outputs.logits
 
 
-if __name__ == "__main__":
+    def rank_loss(self, y_pred, y):
+        ranking_loss = torch.nn.functional.relu(
+            (y_pred - y_pred.t()) * torch.sign((y.t() - y))
+        )
+        scale = 1 + torch.max(ranking_loss)
+        return (
+            torch.sum(ranking_loss) / y_pred.shape[0] / (y_pred.shape[0] - 1) / scale
+        ).float()
 
+    def plcc_loss(self, y_pred, y):
+        sigma_hat, m_hat = torch.std_mean(y_pred, unbiased=False)
+        y_pred = (y_pred - m_hat) / (sigma_hat + 1e-8)
+        sigma, m = torch.std_mean(y, unbiased=False)
+        y = (y - m) / (sigma + 1e-8)
+        loss0 = torch.nn.functional.mse_loss(y_pred, y) / 4
+        rho = torch.mean(y_pred * y)
+        loss1 = torch.nn.functional.mse_loss(rho * y_pred, y) / 4
+        return ((loss0 + loss1) / 2).float()# + 0.3 * rank_loss(y_pred[...,None], y[...,None])
+
+    def forward(self, aesthetic=None, technical=None, labels=None, **args):
+        batch_size = len(aesthetic)
+        
+        # 处理technical数据转为tensor
+        if isinstance(technical, list):
+            technical = torch.stack(technical)
+        technical = technical.to(self.dev)
+
+        # 处理每个batch的消息
+        all_inputs = []
+        for i in range(batch_size):
+            msg = [
+                {
+                    "role": "user", 
+                    "content": """"<|video|>"Analize from details, how would you rate the quality of this image?""",
+                },
+                {"role": "assistant", "content": "The quality of the image is very"},
+            ]
+            # 分别处理每个样本
+            inputs = self.processor(msg, images=None, videos=[aesthetic[i]], preface=True).to(self.dev)
+            all_inputs.append(inputs)
+        
+        # 修改batched_inputs的处理方式
+        batched_inputs = {}
+        for key in all_inputs[0].keys():
+            if isinstance(all_inputs[0][key], torch.Tensor):
+                batched_inputs[key] = torch.cat([inp[key] for inp in all_inputs], dim=0)
+            elif key == "media_offset":
+                # 特殊处理media_offset
+                media_tensors = [inp["media_offset"][0] for inp in all_inputs]  # 取出每个列表中的tensor
+                batched_inputs["media_offset"] = torch.stack(media_tensors, dim=0)  # [B, seq_len]
+
+    
+        # 处理technical特征，支持批处理
+        quality_features = self.quality_encoder(technical)  # [B, C, D, H, W]
+        qf = rearrange(quality_features, "b c d h w -> (b d) (h w) c")
+        quality_embed = self.quality2text_model(qf).bfloat16()
+    
+        image_embeds = self.LLM.forward_image(batched_inputs.pop("pixel_values"))
+        
+        outputs = self.HyperQwen2ForCausalLM_forward(
+            image_embeds=image_embeds,
+            quality_embed=quality_embed, 
+            labels=labels,
+            **batched_inputs,
+        )
+    
+        return outputs
+    
+    @property
+    def dev(self):
+        return self.LLM.device
+
+if __name__ == "__main__":
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     import yaml
     import tqdm
     from exps.fitting import Owl3logits, fit_linear, list_path
     from dataset import ViewDecompositionDataset, dict_simply_collate
 
     opt = yaml.safe_load(open("data.yml"))
-    d = ViewDecompositionDataset(opt["val"])
-    dl = torch.utils.data.DataLoader(d, batch_size=1, shuffle=False, collate_fn=dict_simply_collate)
+    d = ViewDecompositionDataset(opt["train"])
+    dl = torch.utils.data.DataLoader(d, batch_size=2, shuffle=False, num_workers=16, collate_fn=dict_simply_collate)
     model = QualityOwl3Model(tech_brance=False).to(dev)
     logits=[]
     names=[]
     with torch.no_grad():
-        for data in tqdm.tqdm(d):
+        for data in tqdm.tqdm(dl):
             o = model.forward(**data)
-            name = data["name"]
-            names.append(name)
-            logits.append(o[0,-1].cpu())
+            names += data["name"]
+            logits.append(o.logits[:,-1].cpu())
     logits_all = torch.stack(logits)
     lmax = torch.max(logits_all, dim=0)
     top300max = torch.topk(lmax.values, 300, dim=-1)
@@ -408,5 +494,5 @@ if __name__ == "__main__":
     logits_dict = {}
     for i, img in enumerate(names):
         logits_dict[img] = logits_top300[i]
-    torch.save(logits, "logits_lsvq.pt")
-    torch.save(top300max.indices, "indices_lsvq.pt")
+    torch.save(logits_dict, "exps/lsvq/logits_lsvq.pt")
+    torch.save(top300max.indices, "exps/lsvq/indices_lsvq.pt")

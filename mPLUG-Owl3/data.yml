@@ -23,16 +23,16 @@ train:
     #         t_frag: 32
     #         num_clips: 1  
     sample_types:
-        # technical:
-        #     fragments_h: 7
-        #     fragments_w: 7
-        #     fsize_h: 32
-        #     fsize_w: 32
-        #     aligned: 16
-        #     clip_len: 32
-        #     frame_interval: 2
-        #     t_frag: 8
-        #     num_clips: 1
+        technical:
+            fragments_h: 7
+            fragments_w: 7
+            fsize_h: 32
+            fsize_w: 32
+            aligned: 16
+            clip_len: 32
+            frame_interval: 2
+            t_frag: 8
+            num_clips: 1
         aesthetic:
             size_h: 224
             size_w: 224
@@ -82,3 +82,5 @@ val:
             frame_interval: 2
             t_frag: 8
             num_clips: 1  
+
+resume_from: model_epoch_5.pth

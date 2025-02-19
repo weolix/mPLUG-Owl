@@ -20,7 +20,8 @@ from tqdm import tqdm
 random.seed(42)
 
 decord.bridge.set_bridge("torch")
-
+import av
+av.logging.set_level(av.logging.PANIC)
 
 def get_spatial_fragments(
     video,
@@ -252,7 +253,7 @@ def get_single_view(video, sample_type="aesthetic", **kwargs):
 
 
 def spatial_temporal_view_decomposition(
-    video_path, sample_types, samplers, is_train=False, augment=False,
+    video_path, sample_types, samplers, is_train=False, augment=False, 
 ):
     video = {}
     if video_path.endswith(".yuv"):
@@ -268,7 +269,7 @@ def spatial_temporal_view_decomposition(
         del ovideo
     else:
         decord.bridge.set_bridge("torch")
-        vreader = VideoReader(video_path)
+        vreader = VideoReader(video_path, num_threads=4, ctx=cpu(0))
         ### Avoid duplicated video decoding!!! Important!!!!
         all_frame_inds = []
         frame_inds = {}
@@ -462,7 +463,7 @@ def dict_simply_collate(batch):
     data = {}
     for k in keys:
         data[k] = [b[k] for b in batch]
-
+    data["gt_label"] = torch.FloatTensor(data["gt_label"])
     return data
 
 

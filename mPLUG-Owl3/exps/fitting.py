@@ -2,6 +2,7 @@
 
 import abc
 from re import I
+from threading import local
 from IPython import embed
 from PIL import Image
 from numpy import indices
@@ -89,8 +90,17 @@ class koniq10k(torch.utils.data.Dataset):
 
         return img_name, MOS
 
-# 使用示例
-# dataset = ImageQualityDataset(csv_file='koniq10k_scores_and_distributions.csv', image_folder='1024x768')
+class lsvq(torch.utils.data.Dataset):
+    def __init__(self, label_path:str="/home/ippl/xxr/maxvqa/ExplainableVQA/examplar_data_labels/LSVQ/train_labels.txt"):
+        self.label = pd.read_csv(label_path, header=None)[[0,3]]
+        self.prefix = "/home/ippl/datasets/LSVQ/videos/"
+
+    def __len__(self):
+        return len(self.label)
+    
+    def __getitem__(self, idx):
+        return self.prefix+self.label.iloc[idx, 0], self.label.iloc[idx, 1]
+        
 
 class Owl3logits(torch.nn.Module):
     def __init__(self, model_path: str):
@@ -100,6 +110,7 @@ class Owl3logits(torch.nn.Module):
             attn_implementation="sdpa",
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
+            local_files_only=True,
         ).to(device)
         self.model.eval()
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -167,6 +178,8 @@ def plcc_loss(y_pred, y):
 
 
 def fit_linear(logits, linear, dataset, num_logits=150, lr=1e-3, workspace="./"):
+    if not os.path.exists(workspace):
+        os.makedirs(workspace)
     os.chdir(workspace)
     train_set, test_set = torch.utils.data.random_split(dataset, [0.8, 0.2])
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=100, shuffle=True)
@@ -298,28 +311,30 @@ def main():
     # kadid10k_smallset = kadid10k(data_path["kadid10k"], "kadid10k/kadid2.2-2.3.xlsx", )
     koniq10k_set = koniq10k(data_path["koniq10k"], label_path["koniq10k"])
     # koniq10k_smallset = koniq10k(data_path["koniq10k"], "koniq10k/koniq3.4-3.7.csv")
+    lsvq_set = lsvq()
 
     # # fit linear
     # linear = nn.Linear(num_logits, 1) 
-    # logits,_= torch.load("spaq/logits_dict.pth")
-    # fit_linear(logits, linear, spaq_set, num_logits, lr=1e-3, workspace="spaq")
+    # logits = torch.load("lsvq/logits_lsvq.pt")
+    # fit_linear(logits, linear, lsvq_set, num_logits, lr=1e-3, workspace="lsvq")
 
-    # # get logits
-    # owl3 = Owl3logits(model_path)
-    # logits_idc = owl3.get_batch_logits(list_path(data_path["koniq10k"], label_path["koniq10k"]))
-    # torch.save(logits_idc, "kadid10k/logits_discribe.pth")
-
-    # get logits with indices
-    indices = torch.load("kadid10k/ip_indices.pth")
+    # get logits
+    os.chdir("../")
     owl3 = Owl3logits(model_path)
-    logits = owl3.get_logits_with_indices(indices, list_path(data_path["kadid10k"], "kadid10k/kadid2.2-2.3.xlsx"))
-    torch.save(logits, "logits_small_ip.pth")
+    logits_idc = owl3.get_batch_logits(list_path(data_path["koniq10k"], label_path["koniq10k"]))
+    torch.save(logits_idc, "kadid10k/logits_discribe.pth")
 
-    # test cross spaq
-    linear = nn.Linear(num_logits, 1, device=device)
-    linear.load_state_dict(torch.load("spaq/linear150_0.9370.pth"))
-    logits, _ = torch.load("koniq10k/logits_dict.pth")
-    test_cross(linear, logits, koniq10k_set, num_logits)
+    # # get logits with indices
+    # indices = torch.load("kadid10k/ip_indices.pth")
+    # owl3 = Owl3logits(model_path)
+    # logits = owl3.get_logits_with_indices(indices, list_path(data_path["kadid10k"], "kadid10k/kadid2.2-2.3.xlsx"))
+    # torch.save(logits, "logits_small_ip.pth")
+
+    # # test cross spaq
+    # linear = nn.Linear(num_logits, 1, device=device)
+    # linear.load_state_dict(torch.load("spaq/linear150_0.9370.pth"))
+    # logits, _ = torch.load("koniq10k/logits_dict.pth")
+    # test_cross(linear, logits, koniq10k_set, num_logits)
 
     # # fit attention in kadid10k
     # logits = torch.load("logits.pth")
@@ -393,3 +408,26 @@ def main():
 
 if __name__ == "__main__":
     main()
+    """
+    lsvq indices:
+    'poor good high low clear bad blurry very mon sharp, difficult accurate strange excellent unclear uns severe 
+     fuzzy average serious inaccurate acceptable well extremely rich blurred unusual simple satisfactory dark precise
+     poorly realistic detailed vivid important impressive ordinary chaotic差 limited decent problematic fine vibrant dim
+     uneven close unreasonable weak rough dull poorest subjective beautiful mediocre vague obvious creative distorted biased
+     crisp inferior favorable severely abnormal slightly hard black basic nice suitable un distinct odd over inadequate pleasing 
+     strong slight reasonable little extreme abstract sub elegantgood terrible Poor artistic insufficient ind sparse incomplete 
+     satisfying bright effective delicate soft interesting bl likely compromised significant successful dev informative excessive 
+     badly plain evident generally complex clean p noticeable pass old refined small prominent.Poor lacking out minimal 
+     disappointing unnatural natural grain monot peculiar unique fresh obscure common moderate sh uncertain even diverse large 
+     appropriate unpleasant inappropriate desirable red general specific outstanding fragmented simplistic dynamic single heavy 
+     def glo unfavorable seriously pixel intricate long positive unrealistic balanced promising easy professional similar clearly 
+     t crude singular different straightforward questionable highly focused deficient dis pronounced visible mixed exaggerated 
+     apparent heavily smooth yellow fragile commend sufficient overall complete substantial adequate好 challenging defined cool 
+     comprehensive much ( diss varied great messy negative deep thin white coarse dire gradual exceptional distinctive normal 
+     solid bizarre fair unhealthy ab ambiguous colorful detrimental ineffective shaky significantly dangerous thorough pleasant 
+     authentic distantlow few gray useful attractive poorer Good discern concise confusing imaginative critical far sophisticated 
+     satisfied expensive stable unacceptable sym unfair de superior relevant abundant clarity valuable l neat noticeably extensive 
+     deviation好的 rare unreliable objective tight Low compelling outdated concerning crucial noisy skewed narrow preferred 
+     striking lif uniform harsh light h blur unf remarkable best lack bland below intuitive green degraded pure recognizable 
+     lower faint consistent cold'
+    """
