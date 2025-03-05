@@ -25,16 +25,23 @@ model_path = "iic/mPLUG-Owl3-7B-241101"
 class QualityOwl3Model(nn.Module):
     def __init__(
         self,
-        tech_brance=True
+        new_layers=None,
     ):
+        '''
+        Args:
+            tech_brance: 
+        '''
         super().__init__()
 
+        self.new_layers = new_layers
         self.quality_encoder = quality_backbone()
+        self.grad_flag = False  # TODO 设置前几层不需要梯度
+
         config = transformers.AutoConfig.from_pretrained(
             model_path, trust_remote_code=True
         )
-        if tech_brance:
-            config.hyper_layers.append(27)
+        if new_layers is not None:
+            config.hyper_layers += new_layers
 
         self.LLM = transformers.AutoModel.from_pretrained(
             model_path,
@@ -50,22 +57,35 @@ class QualityOwl3Model(nn.Module):
         self.quality2text_model = nn.Sequential(
             nn.Linear(768, self.LLM.embed_dim),
             nn.GELU(),
+            nn.Dropout(0.7),
             nn.Linear(self.LLM.embed_dim, self.LLM.embed_dim),
         )
+
+        # self.quality2text_model = nn.Sequential(
+        #     nn.Dropout(0.5),
+        #     nn.Linear(768, 768 * 2),
+        #     nn.GELU(),
+        #     nn.Dropout(0.5),
+        #     nn.Linear(768*2, self.LLM.embed_dim),
+        #     nn.GELU(),
+        #     nn.Dropout(0.5),
+        #     nn.Linear(self.LLM.embed_dim, self.LLM.embed_dim),
+        # )
 
         self.load_frozen_state_dict()
 
 
     def load_frozen_state_dict(self):
-        self.quality_encoder.load_state_dict(torch.load("exps/weights/fragments_model.pth"),strict=True)
-        self.logi_indices = torch.load("exps/lsvq/indices_lsvq.pt")
-        sentiment_weight = torch.load("exps/lsvq/linear300_0.7911.pth")
+        self.quality_encoder.load_state_dict(torch.load("exps/weights/fragments_model.pth",map_location="cpu"),strict=True)
+        self.logi_indices = torch.load("exps/lsvq/indices_lsvq.pt", map_location="cpu")
+        sentiment_weight = torch.load("exps/lsvq/linear300_0.7911.pth",map_location="cpu")
         self.linear_sw = nn.Linear(300, 1)
         self.linear_sw.load_state_dict(sentiment_weight)
 
         self.quality_encoder.requires_grad_(False)
         self.LLM.requires_grad_(False)
-        self.LLM.language_model.model.layers[26].self_attn.v_kv_proj.requires_grad_(True)
+        for l in self.new_layers:
+            self.LLM.language_model.model.layers[l-1].self_attn.v_kv_proj.requires_grad_(True)
         self.quality2text_model.requires_grad_(True)
 
 
@@ -203,8 +223,9 @@ class QualityOwl3Model(nn.Module):
         next_decoder_cache = None
 
         for decoder_layer in self.LLM.language_model.model.layers:
-            if decoder_layer.layer_idx == 26:
+            if decoder_layer.layer_idx + 1 in self.new_layers:
                 image_embeds = quality_embed
+
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
             if (
@@ -358,44 +379,6 @@ class QualityOwl3Model(nn.Module):
 
         return outputs
 
-    def forward_OLD(
-        self,
-        aesthetic=None,
-        technical=None,
-        labels=None,
-        **args,
-    ):
-        if not isinstance(aesthetic[0], list):
-            aesthetic = [aesthetic]
-        msg = [
-            {
-                "role": "user",
-                "content": """"<|video|>"Analize from details, how would you rate the quality of this image?""",
-            },
-            {"role": "assistant", "content": "The quality of the image is very"},
-        ]
-        inputs = self.processor(msg, images=None, videos=aesthetic, preface=True).to(self.dev)
-
-        # 处理质量评估视频特征
-        quality_features = self.quality_encoder(technical.unsqueeze(0).to(self.dev))
-        qf = rearrange(quality_features, "n c d h w -> (n d) (h w) c")
-        quality_embed = self.quality2text_model(qf).bfloat16()
-
-        image_embeds = self.LLM.forward_image(inputs.pop("pixel_values"))
-        # (24, 729, self.LLM.embed_dim:=3584)
-
-        # outputs = self.LLM.language_model(image_embeds=image_embeds, **inputs,)
-        ########## self.LLM.language_model ##### class HyperQwen2ForCausalLM ###########
-        outputs = self.HyperQwen2ForCausalLM_forward(
-            image_embeds=image_embeds,
-            quality_embed=quality_embed,
-            labels=labels,
-            **inputs,
-        )
-        ####### over ### self.LLM.language_model ##### class HyperQwen2ForCausalLM ###########
-
-        return outputs.logits
-
 
     def rank_loss(self, y_pred, y):
         ranking_loss = torch.nn.functional.relu(
@@ -449,12 +432,14 @@ class QualityOwl3Model(nn.Module):
                 batched_inputs["media_offset"] = torch.stack(media_tensors, dim=0)  # [B, seq_len]
 
     
-        # 处理technical特征，支持批处理
-        quality_features = self.quality_encoder(technical)  # [B, C, D, H, W]
+        # 处理视觉信息，不需要梯度
+        with torch.no_grad():
+            quality_features = self.quality_encoder(technical)  # [B, C, D, H, W]
+            image_embeds = self.LLM.forward_image(batched_inputs.pop("pixel_values"))
+
         qf = rearrange(quality_features, "b c d h w -> (b d) (h w) c")
         quality_embed = self.quality2text_model(qf).bfloat16()
     
-        image_embeds = self.LLM.forward_image(batched_inputs.pop("pixel_values"))
         
         outputs = self.HyperQwen2ForCausalLM_forward(
             image_embeds=image_embeds,
@@ -462,12 +447,21 @@ class QualityOwl3Model(nn.Module):
             labels=labels,
             **batched_inputs,
         )
+
+        # 显存不足，删除一些不需要的变量  #和模型参数
+        del quality_features, qf, image_embeds, aesthetic, technical, labels
+        torch.cuda.empty_cache()
     
         return outputs
     
     @property
     def dev(self):
         return self.LLM.device
+
+
+
+
+
 
 if __name__ == "__main__":
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -479,20 +473,20 @@ if __name__ == "__main__":
     opt = yaml.safe_load(open("data.yml"))
     d = ViewDecompositionDataset(opt["train"])
     dl = torch.utils.data.DataLoader(d, batch_size=2, shuffle=False, num_workers=16, collate_fn=dict_simply_collate)
-    model = QualityOwl3Model(tech_brance=False).to(dev)
-    logits=[]
-    names=[]
-    with torch.no_grad():
-        for data in tqdm.tqdm(dl):
-            o = model.forward(**data)
-            names += data["name"]
-            logits.append(o.logits[:,-1].cpu())
-    logits_all = torch.stack(logits)
-    lmax = torch.max(logits_all, dim=0)
-    top300max = torch.topk(lmax.values, 300, dim=-1)
-    logits_top300 = logits_all[:,top300max.indices]
-    logits_dict = {}
-    for i, img in enumerate(names):
-        logits_dict[img] = logits_top300[i]
-    torch.save(logits_dict, "exps/lsvq/logits_lsvq.pt")
-    torch.save(top300max.indices, "exps/lsvq/indices_lsvq.pt")
+    model = QualityOwl3Model(tech_brance=True).to(dev)
+    # logits=[]
+    # names=[]
+    # with torch.no_grad():
+    #     for data in tqdm.tqdm(dl):
+    #         o = model.forward(**data)
+    #         names += data["name"]
+    #         logits.append(o.logits[:,-1].cpu())
+    # logits_all = torch.stack(logits)
+    # lmax = torch.max(logits_all, dim=0)
+    # top300max = torch.topk(lmax.values, 300, dim=-1)
+    # logits_top300 = logits_all[:,top300max.indices]
+    # logits_dict = {}
+    # for i, img in enumerate(names):
+    #     logits_dict[img] = logits_top300[i]
+    # torch.save(logits_dict, "exps/lsvq/logits_lsvq.pt")
+    # torch.save(top300max.indices, "exps/lsvq/indices_lsvq.pt")

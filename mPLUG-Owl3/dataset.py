@@ -358,7 +358,8 @@ class ViewDecompositionDataset(torch.utils.data.Dataset):
         self.weight = opt.get("weight", 0.5)
         
         self.fully_supervised = opt.get("fully_supervised", False)
-        print("Fully supervised:", self.fully_supervised)
+        # print("Fully supervised:", self.fully_supervised)
+        
         
         self.video_infos = []
         self.ann_file = opt["anno_file"]
@@ -391,10 +392,10 @@ class ViewDecompositionDataset(torch.utils.data.Dataset):
                     sopt["frame_interval"],
                     sopt["num_clips"],
                 )
-            print(
-                stype + " branch sampled frames:",
-                self.samplers[stype](240, self.phase == "train"),
-            )
+            # print(
+            #     stype + " branch sampled frames:",
+            #     self.samplers[stype](240, self.phase == "train"),
+            # )
 
         if isinstance(self.ann_file, list):
             self.video_infos = self.ann_file
@@ -417,7 +418,7 @@ class ViewDecompositionDataset(torch.utils.data.Dataset):
                     for file in files:
                         if file.endswith(".mp4"):
                             video_filenames += [os.path.join(root, file)]
-                print(len(video_filenames))
+                # print(len(video_filenames))
                 video_filenames = sorted(video_filenames)
                 for filename in video_filenames:
                     self.video_infos.append(dict(filename=filename, label=-1))
@@ -455,6 +456,7 @@ class ViewDecompositionDataset(torch.utils.data.Dataset):
         return data
 
     def __len__(self):
+        # return 20
         return len(self.video_infos)
 
 

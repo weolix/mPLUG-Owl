@@ -1,86 +1,202 @@
-
 train:
-    weight: 0.598
-    phase: train
-    anno_file: /home/ippl/xxr/maxvqa/ExplainableVQA/examplar_data_labels/LSVQ/train_labels.txt
-    data_prefix: /home/ippl/datasets/LSVQ/videos
-    # sample_types:
-    #     technical:
-    #         fragments_h: 7
-    #         fragments_w: 7
-    #         fsize_h: 32
-    #         fsize_w: 32
-    #         aligned: 16
-    #         clip_len: 64
-    #         frame_interval: 2
-    #         t_frag: 32
-    #         num_clips: 1
-    #     aesthetic:
-    #         size_h: 224
-    #         size_w: 224
-    #         clip_len: 32
-    #         frame_interval: 2
-    #         t_frag: 32
-    #         num_clips: 1  
-    sample_types:
-        technical:
-            fragments_h: 7
-            fragments_w: 7
-            fsize_h: 32
-            fsize_w: 32
-            aligned: 16
-            clip_len: 32
-            frame_interval: 2
-            t_frag: 8
-            num_clips: 1
-        aesthetic:
-            size_h: 224
-            size_w: 224
-            clip_len: 16
-            frame_interval: 2
-            t_frag: 8
-            num_clips: 1  
+    lsvq:
+        type: ViewDecompositionDataset
+        phase: train
+        anno_file: examplar_data_labels/LSVQ/train_labels.txt
+        data_prefix: /home/ippl/datasets/LSVQ/videos
+        sample_types:
+            technical:
+                fragments_h: 7
+                fragments_w: 7
+                fsize_h: 32
+                fsize_w: 32
+                aligned: 16
+                clip_len: 32
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
+            aesthetic:
+                clip_len: 16
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1  
                 
-val:
-    weight: 0.598
-    phase: test
-    anno_file: /home/ippl/xxr/maxvqa/ExplainableVQA/examplar_data_labels/LSVQ/test_labels.txt
-    data_prefix: /home/ippl/datasets/LSVQ/videos
-    # sample_types:
-    #     technical:
-    #         fragments_h: 7
-    #         fragments_w: 7
-    #         fsize_h: 32
-    #         fsize_w: 32
-    #         aligned: 16
-    #         clip_len: 64
-    #         frame_interval: 2
-    #         t_frag: 32
-    #         num_clips: 1
-    #     aesthetic:
-    #         size_h: 224
-    #         size_w: 224
-    #         clip_len: 32
-    #         frame_interval: 2
-    #         t_frag: 32
-    #         num_clips: 1  
-    sample_types:
-        technical:
-            fragments_h: 7
-            fragments_w: 7
-            fsize_h: 32
-            fsize_w: 32
-            aligned: 16
-            clip_len: 32
-            frame_interval: 2
-            t_frag: 8
-            num_clips: 1
-        aesthetic:
-            size_h: 224
-            size_w: 224
-            clip_len: 16
-            frame_interval: 2
-            t_frag: 8
-            num_clips: 1  
+    # maxwell:
+    #     type: ViewDecompositionDataset
+    #     phase: test
+    #     anno_file: examplar_data_labels/MaxWell/test_labels.txt
+    #     data_prefix: /home/ippl/xxr/datasets/MaxWell
+    #     sample_types:
+    #         technical:
+    #             fragments_h: 7
+    #             fragments_w: 7
+    #             fsize_h: 32
+    #             fsize_w: 32
+    #             aligned: 16
+    #             clip_len: 32
+    #             frame_interval: 2
+    #             t_frag: 8
+    #             num_clips: 1
+    #         aesthetic:
+    #             clip_len: 16
+    #             frame_interval: 2
+    #             t_frag: 8
+    #             num_clips: 1
 
-resume_from: model_epoch_5.pth
+    # koniq-10k:
+    #     type: image
+    #     weight: 0.598
+    #     phase: test
+    #     anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/train/koniq10k_train.json
+    #     data_prefix: /home/ippl/xxr/datasets/zachdata//Koniq10k/1024x768
+    #     sample_types:
+    #         technical:
+    #             size_h: 224
+    #             size_w: 224
+    #         aesthetic:
+    # kadid-10k:
+    #     type: image
+    #     weight: 0.598
+    #     phase: test
+    #     anno_file: /home/ippl/xxr/datasets/zachdata//kadid10k/dmos.csv
+    #     data_prefix: /home/ippl/xxr/datasets/zachdata//kadid10k/images
+    #     sample_types:
+    #         technical:
+    #             size_h: 224
+    #             size_w: 224
+    #         aesthetic:
+
+    # spaq:
+    #     type: image
+    #     weight: 0.598
+    #     phase: test
+    #     anno_file: /home/ippl/xxr/datasets/zachdata//SPAQ/annotations/MOS and Image attribute scores.xlsx
+    #     data_prefix: /home/ippl/xxr/datasets/zachdata//SPAQ/TestImage
+    #     sample_types:
+    #         technical:
+    #             size_h: 224
+    #             size_w: 224
+    #         aesthetic:
+
+
+    # live:
+    #     type: image
+    #     weight: 0.598
+    #     phase: test
+    #     anno_file: /home/ippl/xxr/datasets/zachdata//LIVE/dmos.mat
+    #     data_prefix: /home/ippl/xxr/datasets/zachdata//LIVE/images
+    #     sample_types:
+    #         technical:
+    #             size_h: 224
+    #             size_w: 224
+    #         aesthetic:
+                
+test:
+    live-vqc:
+        type: ViewDecompositionDataset
+        phase: test
+        anno_file: examplar_data_labels/LIVE_VQC/labels.txt
+        data_prefix: /home/ippl/SJB/LIVE-VQC/data
+        sample_types:
+            technical:
+                fragments_h: 7
+                fragments_w: 7
+                fsize_h: 32
+                fsize_w: 32
+                aligned: 16
+                clip_len: 32
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
+            aesthetic:
+                clip_len: 16
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
+
+    maxwell:
+        type: ViewDecompositionDataset
+        phase: test
+        anno_file: examplar_data_labels/MaxWell/test_labels.txt
+        data_prefix: /home/ippl/xxr/datasets/MaxWell
+        sample_types:
+            technical:
+                fragments_h: 7
+                fragments_w: 7
+                fsize_h: 32
+                fsize_w: 32
+                aligned: 16
+                clip_len: 32
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
+            aesthetic:
+                clip_len: 16
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
+    lsvq-test:
+        type: ViewDecompositionDataset
+        phase: test
+        anno_file: examplar_data_labels/LSVQ/test_labels.txt
+        data_prefix: /home/ippl/datasets/LSVQ/videos
+        sample_types:
+            technical:
+                fragments_h: 7
+                fragments_w: 7
+                fsize_h: 32
+                fsize_w: 32
+                aligned: 16
+                clip_len: 32
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
+            aesthetic:
+                clip_len: 16
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1  
+
+    lsvq-1080p:
+        type: ViewDecompositionDataset
+        phase: test
+        anno_file: /home/ippl/datasets/LSVQ/labels_1080p.txt
+        data_prefix: /home/ippl/datasets/LSVQ/videos
+        sample_types:
+            technical:
+                fragments_h: 7
+                fragments_w: 7
+                fsize_h: 32
+                fsize_w: 32
+                aligned: 16
+                clip_len: 32
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
+            aesthetic:
+                clip_len: 16
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
+
+    konvid1k:
+        type: ViewDecompositionDataset
+        phase: test
+        anno_file: examplar_data_labels/KoNViD/labels.txt
+        data_prefix: /home/ippl/SJB/KoNViD_1k
+        sample_types:
+            technical:
+                fragments_h: 7
+                fragments_w: 7
+                fsize_h: 32
+                fsize_w: 32
+                aligned: 16
+                clip_len: 32
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
+            aesthetic:
+                clip_len: 16
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
