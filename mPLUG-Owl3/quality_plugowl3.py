@@ -1,3 +1,4 @@
+from copy import deepcopy
 import torch, sys, transformers
 import torch.nn as nn
 from typing import List, Optional, Tuple, Union
@@ -17,8 +18,8 @@ from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
 )
-
-model_path = "iic/mPLUG-Owl3-7B-241101"
+from peft import LoraConfig, get_peft_model, TaskType
+from peft.tuners.lora import LoraLayer
 
 
 
@@ -26,16 +27,24 @@ class QualityOwl3Model(nn.Module):
     def __init__(
         self,
         new_layers=None,
+        prompt_len=0,  # Prompt长度
+        model_path = "iic/mPLUG-Owl3-7B-241101",
+        # 添加 LoRA 相关参数
+        lora_r=8,
+        lora_alpha=16,
+        lora_dropout=0.05,
+        trainable_prompt=True
     ):
-        '''
-        Args:
-            tech_brance: 
-        '''
         super().__init__()
 
         self.new_layers = new_layers
         self.quality_encoder = quality_backbone()
-        self.grad_flag = False  # TODO 设置前几层不需要梯度
+        self.grad_flag = False
+        # 保存 LoRA 参数
+        self.lora_r = lora_r
+        self.lora_alpha = lora_alpha
+        self.lora_dropout = lora_dropout
+        self.trainable_prompt = trainable_prompt
 
         config = transformers.AutoConfig.from_pretrained(
             model_path, trust_remote_code=True
@@ -51,43 +60,104 @@ class QualityOwl3Model(nn.Module):
             torch_dtype=torch.bfloat16,
         )
 
+        LLM_lora = deepcopy(self.LLM)
+        self.LLM.requires_grad_(False)
+        
+        # 为new_layers之后的层添加LoRA
+        if hasattr(self, 'lora_r') and self.lora_r > 0:
+            # 确定要添加LoRA的层索引
+            num_layers = len(self.LLM.language_model.model.layers)
+            target_layer_idx = [i for i in range(self.new_layers[-1]-1, num_layers)] #max(self.new_layers) if self.new_layers else 0
+        
+            # 创建LoRA配置
+            peft_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                inference_mode=False,
+                r=self.lora_r,
+                lora_alpha=self.lora_alpha,
+                lora_dropout=self.lora_dropout,
+                target_modules=["q_proj", "k_proj", "o_proj"],
+            )
+
+            # 对target_layer_idx应用LoRA
+            get_peft_model(LLM_lora.language_model.model, peft_config)
+            for l in target_layer_idx:
+                self.LLM.language_model.model.layers[l] = LLM_lora.language_model.model.layers[l]
+
+
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
         self.processor = self.LLM.init_processor(self.tokenizer)
 
         self.quality2text_model = nn.Sequential(
             nn.Linear(768, self.LLM.embed_dim),
             nn.GELU(),
-            nn.Dropout(0.7),
+            nn.Dropout(0.5),
             nn.Linear(self.LLM.embed_dim, self.LLM.embed_dim),
         )
 
-        # self.quality2text_model = nn.Sequential(
-        #     nn.Dropout(0.5),
-        #     nn.Linear(768, 768 * 2),
-        #     nn.GELU(),
-        #     nn.Dropout(0.5),
-        #     nn.Linear(768*2, self.LLM.embed_dim),
-        #     nn.GELU(),
-        #     nn.Dropout(0.5),
-        #     nn.Linear(self.LLM.embed_dim, self.LLM.embed_dim),
-        # )
+
+        # Prompt-tuning specific
+        self.prompt_len = prompt_len
+        self.embed_dim = self.LLM.embed_dim
+        self.prompt_embeddings = nn.Embedding(prompt_len, self.embed_dim)
+        # ------------------------------
+        # 1. 先随机初始化
+        nn.init.xavier_normal_(self.prompt_embeddings.weight)
+
+        # 2. 获取目标字符串的Token embedding
+        init_prompt_str = "Analize from details, how would you rate the quality of this image?"
+        with torch.no_grad():
+            encoded = self.tokenizer(
+                init_prompt_str, return_tensors="pt"
+            )
+            # 获取已冻结的embed_tokens
+            question_embeds = self.LLM.language_model.model.embed_tokens(
+                encoded["input_ids"]
+            )[0]  # shape: [seq_len, embed_dim]
+
+        # 3. 根据prompt_len截断或填补
+        seq_len = question_embeds.size(0)
+        if seq_len >= prompt_len:
+            question_embeds = question_embeds[:prompt_len, :]
+        else:
+            # 剩余位置可维持原来的随机初始化，也可以padding为0
+            pass
+
+        # 4. 覆写prompt_embeddings的前seq_len行
+        self.prompt_embeddings.weight.data[:seq_len] = question_embeds.data
+
 
         self.load_frozen_state_dict()
 
-
     def load_frozen_state_dict(self):
-        self.quality_encoder.load_state_dict(torch.load("exps/weights/fragments_model.pth",map_location="cpu"),strict=True)
+        # ...原有代码保持不变...
+        self.quality_encoder.load_state_dict(
+            torch.load("exps/weights/fragments_model.pth", map_location="cpu"),
+            strict=True,
+        )
         self.logi_indices = torch.load("exps/lsvq/indices_lsvq.pt", map_location="cpu")
-        sentiment_weight = torch.load("exps/lsvq/linear300_0.7911.pth",map_location="cpu")
+        sentiment_weight = torch.load(
+            "exps/lsvq/linear300_0.7911.pth", map_location="cpu"
+        )
         self.linear_sw = nn.Linear(300, 1)
         self.linear_sw.load_state_dict(sentiment_weight)
-
+    
+        # 冻结所有参数
         self.quality_encoder.requires_grad_(False)
-        self.LLM.requires_grad_(False)
+        
+        # 为v_kv_proj单独设置梯度
         for l in self.new_layers:
-            self.LLM.language_model.model.layers[l-1].self_attn.v_kv_proj.requires_grad_(True)
-        self.quality2text_model.requires_grad_(True)
+            self.LLM.language_model.model.layers[
+                l - 1
+            ].self_attn.v_kv_proj.requires_grad_(True)
+        
 
+        # 其他参数设置
+        self.quality2text_model.requires_grad_(True)
+        # 冻结LLM的embedding层
+        self.LLM.language_model.model.embed_tokens.requires_grad_(False)
+        # 只训练prompt embedding
+        self.prompt_embeddings.requires_grad_(self.trainable_prompt)
 
 
     def HyperQwen2Model_forward(
@@ -105,7 +175,6 @@ class QualityOwl3Model(nn.Module):
         return_dict: Optional[bool] = None,
         quality_embed=None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
-
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError(
@@ -149,6 +218,56 @@ class QualityOwl3Model(nn.Module):
 
         if inputs_embeds is None:
             inputs_embeds = self.LLM.language_model.model.embed_tokens(input_ids)
+
+        # Prepend the prompt embeddings to the input embeddings
+        batch_size = inputs_embeds.shape[0]
+        prompt_embeds = self.prompt_embeddings.weight.unsqueeze(0).expand(
+            batch_size, -1, -1
+        ).to(dtype=inputs_embeds.dtype)  # [batch_size, prompt_len, embed_dim]
+        inputs_embeds = torch.cat(
+            (prompt_embeds, inputs_embeds), dim=1
+        )  # [batch_size, prompt_len + seq_length, embed_dim]
+
+        # Update attention mask and position IDs
+        if attention_mask is None:
+            # 如果attention_mask为None，创建一个全1的掩码
+            attention_mask = torch.ones(batch_size, seq_length, device=inputs_embeds.device)
+
+        # 现在安全地连接prompt部分的掩码
+        attention_mask = torch.cat(
+            (
+                torch.ones(batch_size, self.prompt_len, device=inputs_embeds.device),
+                attention_mask,
+            ),
+            dim=1,
+        )
+
+        # 在拼接prompt embeddings之前检查position_ids的batch维度
+        if position_ids is None:
+            device = input_ids.device if input_ids is not None else inputs_embeds.device
+            position_ids = torch.arange(
+                past_key_values_length,
+                seq_length + past_key_values_length,
+                dtype=torch.long,
+                device=device,
+            )
+            # 确保position_ids有batch_size维度
+            position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
+        else:
+            # 如果提供的position_ids只有一个batch但需要多个
+            if position_ids.size(0) == 1 and batch_size > 1:
+                position_ids = position_ids.expand(batch_size, -1)
+            position_ids = position_ids.view(batch_size, -1).long()
+
+        position_ids = torch.cat(
+            (
+                torch.arange(0, self.prompt_len, device=inputs_embeds.device).unsqueeze(
+                    0
+                ).expand(batch_size, -1),
+                position_ids,
+            ),
+            dim=1,
+        )
 
         if (
             attention_mask is not None
@@ -407,19 +526,20 @@ class QualityOwl3Model(nn.Module):
             technical = torch.stack(technical)
         technical = technical.to(self.dev)
 
-        # 处理每个batch的消息
+        # 处理每个batch的消息 - 简化消息内容，因为问题已在prompt_embeddings中
         all_inputs = []
         for i in range(batch_size):
             msg = [
                 {
                     "role": "user", 
-                    "content": """"<|video|>"Analize from details, how would you rate the quality of this image?""",
+                    "content": "<|video|>",  # 只保留视频标记，问题由prompt_embeddings提供
                 },
                 {"role": "assistant", "content": "The quality of the image is very"},
             ]
             # 分别处理每个样本
             inputs = self.processor(msg, images=None, videos=[aesthetic[i]], preface=True).to(self.dev)
             all_inputs.append(inputs)
+        
         
         # 修改batched_inputs的处理方式
         batched_inputs = {}
@@ -465,15 +585,7 @@ class QualityOwl3Model(nn.Module):
 
 if __name__ == "__main__":
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    import yaml
-    import tqdm
-    from exps.fitting import Owl3logits, fit_linear, list_path
-    from dataset import ViewDecompositionDataset, dict_simply_collate
-
-    opt = yaml.safe_load(open("data.yml"))
-    d = ViewDecompositionDataset(opt["train"])
-    dl = torch.utils.data.DataLoader(d, batch_size=2, shuffle=False, num_workers=16, collate_fn=dict_simply_collate)
-    model = QualityOwl3Model(tech_brance=True).to(dev)
+    model = QualityOwl3Model().to(dev)
     # logits=[]
     # names=[]
     # with torch.no_grad():

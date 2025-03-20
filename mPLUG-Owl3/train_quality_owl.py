@@ -24,43 +24,13 @@ writer = SummaryWriter(run_dir)
 
 
 def trainq(model, val_datasets, optimizer, hylayers, gradient_accumulation_steps=4):
-    epochs = 5
+    epochs = 10
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.5)
 
     global_step = 0
-    best_plcc = 0.7
+
     for epoch in range(epochs):
         writer.add_scalar("Learning Rate", optimizer.param_groups[0]["lr"], epoch)
-
-       # 验证
-        model.eval()
-        for name, data in val_datasets["test"].items():
-            valdataloader = DataLoader(data, batch_size=5, shuffle=True, num_workers=8, collate_fn=dataset.dict_simply_collate)
-            
-            with torch.no_grad():
-                val_pred_scores = []
-                val_gt_scores = []
-                for i, batch in enumerate(tqdm.tqdm(valdataloader, desc=f"{name} Validation", ncols=100)):
-                    aesthetic = batch["aesthetic"]
-                    technical = batch["technical"] 
-                    labels = batch["gt_label"].to(model.LLM.device)
-
-                    outputs = model(aesthetic=aesthetic, technical=technical, labels=labels)
-                    plccloss, rankloss, score = outputs.loss
-                    val_pred_scores += (score.cpu().tolist())
-                    val_gt_scores += (labels.cpu().tolist())
-                
-                    # 清理不需要的变量
-                    del batch, aesthetic, technical, labels, outputs, plccloss, rankloss, score
-                    torch.cuda.empty_cache()  # 定期清理GPU缓存
-                
-                val_pred_scores = torch.tensor(val_pred_scores)
-                val_gt_scores = torch.tensor(val_gt_scores)
-                spearmanrcc = spearmanr(val_pred_scores, val_gt_scores)
-                pearsonrcc = pearsonr(val_pred_scores, val_gt_scores)
-                writer.add_scalar(f"Spearmanr/val-{name}", spearmanrcc[0], epoch)
-                writer.add_scalar(f"Pearsonr/val-{name}", pearsonrcc[0], epoch)
-                print(f"{name} eval Spearmanr: {spearmanrcc[0]:.4f}, Pearsonr: {pearsonrcc[0]:.4f}")
 
         # 训练
         model.train()
@@ -70,7 +40,7 @@ def trainq(model, val_datasets, optimizer, hylayers, gradient_accumulation_steps
         optimizer.zero_grad()  # 在循环开始前清零梯度
         
         for name, data in val_datasets["train"].items():
-            dataloader = DataLoader(data, batch_size=5, shuffle=True, num_workers=8, collate_fn=dataset.dict_simply_collate)
+            dataloader = DataLoader(data, batch_size=4, shuffle=True, num_workers=8, collate_fn=dataset.dict_simply_collate)
             for i, batch in enumerate(tqdm.tqdm(dataloader, desc=f"Epoch {epoch+1}", ncols=100)):
                 aesthetic = batch["aesthetic"]
                 technical = batch["technical"] 
@@ -115,10 +85,13 @@ def trainq(model, val_datasets, optimizer, hylayers, gradient_accumulation_steps
             print(f"train Spearmanr: {spearmanrcc[0]:.4f}, Pearsonr: {pearsonrcc[0]:.4f}")
 
         try:
-            # 创建一个字典来存储所有需要保存的参数, 训练完直接保存
+            # 创建一个字典来存储所有需要保存的参数
             save_dict = {
                 'q2t_state': model.quality2text_model.state_dict(),
-                'attn_states': {}
+                'attn_states': {},
+                'optimizer_state': optimizer.state_dict(),  # 保存优化器状态
+                'scheduler_state': scheduler.state_dict(),  # 保存调度器状态
+                'epoch': epoch,                            # 保存当前epoch
             }
             
             # 保存训练的hyperlayer的v_kv_proj层的参数
@@ -127,6 +100,19 @@ def trainq(model, val_datasets, optimizer, hylayers, gradient_accumulation_steps
                     model.LLM.language_model.model.layers[layer_idx-1]
                     .self_attn.v_kv_proj.state_dict()
                 )
+            
+            # 保存prompt参数（如果启用）
+            if hasattr(model, 'prompt_embeddings') and model.trainable_prompt:
+                save_dict['prompt_embeddings'] = model.prompt_embeddings.state_dict()
+            
+            # 保存LoRA参数（如果启用）
+            if hasattr(model, 'lora_r') and model.lora_r > 0:
+                save_dict['lora_params'] = {}
+                # 遍历并保存所有LoRA参数
+                for name, module in model.named_modules():
+                    if hasattr(module, 'lora_A') or hasattr(module, 'lora_B'):
+                        # 对于PEFT库的LoRA实现，需要提取特定状态
+                        save_dict['lora_params'][name] = module.state_dict()
             
             # 保存为单个文件
             torch.save(save_dict, f"{run_dir}/model_epoch_{epoch}.pth")
@@ -169,6 +155,36 @@ def trainq(model, val_datasets, optimizer, hylayers, gradient_accumulation_steps
             except Exception as e:
                 print(f"Failed to apply EMA: {e}")
 
+
+       # 验证
+        model.eval()
+        for name, data in val_datasets["test"].items():
+            valdataloader = DataLoader(data, batch_size=5, shuffle=True, num_workers=8, collate_fn=dataset.dict_simply_collate)
+            
+            with torch.no_grad():
+                val_pred_scores = []
+                val_gt_scores = []
+                for i, batch in enumerate(tqdm.tqdm(valdataloader, desc=f"{name} Validation", ncols=100)):
+                    aesthetic = batch["aesthetic"]
+                    technical = batch["technical"] 
+                    labels = batch["gt_label"].to(model.LLM.device)
+
+                    outputs = model(aesthetic=aesthetic, technical=technical, labels=labels)
+                    plccloss, rankloss, score = outputs.loss
+                    val_pred_scores += (score.cpu().tolist())
+                    val_gt_scores += (labels.cpu().tolist())
+                
+                    # 清理不需要的变量
+                    del batch, aesthetic, technical, labels, outputs, plccloss, rankloss, score
+                    torch.cuda.empty_cache()  # 定期清理GPU缓存
+                
+                val_pred_scores = torch.tensor(val_pred_scores)
+                val_gt_scores = torch.tensor(val_gt_scores)
+                spearmanrcc = spearmanr(val_pred_scores, val_gt_scores)
+                pearsonrcc = pearsonr(val_pred_scores, val_gt_scores)
+                writer.add_scalar(f"Spearmanr/val-{name}", spearmanrcc[0], epoch)
+                writer.add_scalar(f"Pearsonr/val-{name}", pearsonrcc[0], epoch)
+                print(f"{name} eval Spearmanr: {spearmanrcc[0]:.4f}, Pearsonr: {pearsonrcc[0]:.4f}")
         
  
 
@@ -203,22 +219,81 @@ def evaluate(model, val_dataset):
         
 
 
-def load_model(model, load_run, load_epoch, hylayers):
+def load_model(model, load_run, load_epoch=None, hylayers=[28], optimizer=None, scheduler=None):
+    """
+    加载模型参数
+    
+    Args:
+        model: QualityOwl3Model实例
+        load_run: 运行目录路径
+        load_epoch: 要加载的模型的epoch
+        hylayers: 超网络层索引列表
+    
+    Returns:
+        加载参数后的模型
+    """
+    try:
+        if load_epoch is None:
+            if not os.path.isfile(load_run):
+                # 从最新的模型中加载
+                model_files = os.listdir(load_run)
+                model_files = [f for f in model_files if f.startswith('model_epoch_')]
+                model_files = sorted(model_files, key=lambda x: int(x.split('_')[-1].split('.')[0]))
+                load_epoch = int(model_files[-1].split('_')[-1].split('.')[0])
+            else:
+                checkpoint = torch.load(load_run, map_location='cpu')
+        else:
+            checkpoint = torch.load(f"{load_run}/model_epoch_{load_epoch}.pth", map_location='cpu')
+        
+        # 加载quality2text模型参数
+        model.quality2text_model.load_state_dict(checkpoint['q2t_state'])
+        print(f"✓ 成功加载quality2text模型参数")
+        
+        # 加载attention层参数
+        for layer_idx in hylayers:
+            layer_key = f'layer_{layer_idx}'
+            if layer_key in checkpoint['attn_states']:
+                model.LLM.language_model.model.layers[layer_idx-1].self_attn.v_kv_proj.load_state_dict(
+                    checkpoint['attn_states'][layer_key]
+                )
+                print(f"✓ 成功加载第{layer_idx}层attention参数")
+        
+        # 加载prompt参数（如果启用）
+        if 'prompt_embeddings' in checkpoint and hasattr(model, 'prompt_embeddings'):
+            model.prompt_embeddings.load_state_dict(checkpoint['prompt_embeddings'])
+            print(f"✓ 成功加载prompt embeddings参数")
+        
+        # 加载LoRA参数（如果启用）
+        if 'lora_params' in checkpoint and hasattr(model, 'lora_r') and model.lora_r > 0:
+            # 遍历并加载所有LoRA参数
+            lora_loaded_count = 0
+            for name, module in model.named_modules():
+                if name in checkpoint['lora_params']:
+                    if hasattr(module, 'lora_A') or hasattr(module, 'lora_B'):
+                        module.load_state_dict(checkpoint['lora_params'][name])
+                        lora_loaded_count += 1
+            print(f"✓ 成功加载{lora_loaded_count}个LoRA模块参数")
 
-    checkpoint = torch.load(f"{load_run}/model_epoch_{load_epoch}.pth")
-    
-    # 加载quality2text模型参数
-    model.quality2text_model.load_state_dict(checkpoint['q2t_state'])
-    
-    # 加载attention层参数
-    for layer_idx in hylayers:
-        model.LLM.language_model.model.layers[layer_idx-1].self_attn.v_kv_proj.load_state_dict(
-            checkpoint['attn_states'][f'layer_{layer_idx}']
-        )
+        # 加载优化器状态（如果提供）
+        if optimizer is not None and 'optimizer_state' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state'])
+            print(f"✓ 成功加载优化器状态")
+            
+        # 加载调度器状态（如果提供）
+        if scheduler is not None and 'scheduler_state' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state'])
+            print(f"✓ 成功加载学习率调度器状态")
+        
+        print(f"✓ 模型成功从{load_run}/model_epoch_{load_epoch}.pth加载")
+        return model, optimizer, scheduler
+    except Exception as e:
+        print(f"❌ 加载模型时出错: {e}")
+        raise
+
 
 
 def main():
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # 加载配置文件，假设 data.yml 中包含训练参数
     opt = yaml.safe_load(open("data.yml", "r"))
@@ -235,29 +310,51 @@ def main():
         # 19, # add
         28, # add
     ]
-    model = QualityOwl3Model(new_layers=hylayers).to(device)
-    q2t_param = [{'params': model.quality2text_model.parameters()}]
-    attn_param = [{'params': model.LLM.language_model.model.layers[k-1].self_attn.v_kv_proj.parameters()} for k in hylayers]
+    # 启用trainable_prompt设为True
+    model = QualityOwl3Model(new_layers=hylayers, lora_r=8, trainable_prompt=False)
 
-    # load_model(model, "runs/2025-02-26/20:58:11", 0, hylayers)
-
-    # 创建AdamW优化器
+    
+    # 收集所有需要优化的参数
+    params_to_optimize = []
+    
+    # 1. quality2text模型参数
+    q2t_param = {'params': model.quality2text_model.parameters(), 'lr': 2e-5}
+    params_to_optimize.append(q2t_param)
+    
+    # 2. v_kv_proj参数（原有的attention参数）
+    for k in hylayers:
+        layer_params = {'params': model.LLM.language_model.model.layers[k-1].self_attn.v_kv_proj.parameters(), 'lr': 2e-5}
+        params_to_optimize.append(layer_params)
+    
+    # 3. 如果启用了prompt-tuning，添加prompt参数
+    if hasattr(model, 'prompt_embeddings') and model.trainable_prompt:
+        prompt_params = {'params': model.prompt_embeddings.parameters(), 'lr': 5e-4}  # 可以为prompt使用更高的学习率
+        params_to_optimize.append(prompt_params)
+    
+    # 4. 如果启用了LoRA，添加所有LoRA参数
+    if hasattr(model, 'lora_r') and model.lora_r > 0:
+        # 查找所有LoRA模块
+        for name, param in model.named_parameters():
+            # 根据参数名判断是否为LoRA参数（通常包含"lora_"字符串）
+            if 'lora_' in name and param.requires_grad:
+                lora_params = {'params': param, 'lr': 2e-5}  # 可以为LoRA使用不同的学习率
+                params_to_optimize.append(lora_params)
+    
+    # 创建AdamW优化器，使用收集到的所有参数
     optimizer = optim.AdamW(
-        q2t_param + attn_param,
-        lr=1e-5,
+        params_to_optimize,
         betas=(0.9, 0.999),
         eps=1e-8,
         weight_decay=0.01
     )
 
+    model, optimizer, _ = load_model(model, "runs/2025-03-10/19:47:58/model_epoch_2.pth", None, hylayers, optimizer).to(device)
     # 训练 quality brance
     trainq(model, val_datasets, optimizer, hylayers, gradient_accumulation_steps=1)
-
-    # evaluate(model, val_datasets["test"]["konvid1k"])
 
 
 if __name__ == "__main__":
     main()
     # TODO 词向量相似度
-    # TODO Prompt-tuning
-    # HYPERLAYER后添加LORA
+    # FINISH × Prompt-tuning 
+    # FINISH HYPERLAYER后添加LORA
