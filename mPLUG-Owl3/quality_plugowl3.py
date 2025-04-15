@@ -1,9 +1,10 @@
 from copy import deepcopy
 import torch, sys, transformers
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import List, Optional, Tuple, Union
 from swin_backbone import SwinTransformer3D as quality_backbone
-
+from dover import VQABackbone, VQAHead
 from decord import VideoReader, cpu
 from PIL import Image
 from torchvision import transforms
@@ -21,7 +22,77 @@ from transformers.modeling_outputs import (
 from peft import LoraConfig, get_peft_model, TaskType
 from peft.tuners.lora import LoraLayer
 
+def standardize(x, dim=0):
+    mean = x.mean(dim=dim, keepdim=True)
+    std = x.std(dim=dim, keepdim=True) + 1e-8
+    return (x - mean) / std
 
+
+class AttentionFusion(nn.Module):
+    def __init__(self, hidden_dim, vqa_dim):
+        super().__init__()
+        # 原有的VQA特征到hidden_dim的投影
+        self.query_proj = nn.Linear(vqa_dim, hidden_dim)
+        
+        # 新增：hidden_states到vqa_dim的直接投影
+        self.hidden_proj = nn.Linear(hidden_dim, vqa_dim)
+        
+        self.attention = nn.MultiheadAttention(hidden_dim, num_heads=4, batch_first=True)
+        self.fusion_layer = nn.Linear(hidden_dim + vqa_dim, vqa_dim)
+        
+        # LayerNorm组件
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(vqa_dim)
+        self.final_norm = nn.LayerNorm(vqa_dim)
+        
+        # 直接融合用的额外层
+        self.direct_fusion = nn.Linear(vqa_dim * 2, vqa_dim)
+        self.direct_norm = nn.LayerNorm(vqa_dim)
+        
+    def forward(self, hidden_states, vqa_features):
+        hidden_states = hidden_states[:,-1,:].unsqueeze(1)
+        hidden_states = hidden_states.to(vqa_features.dtype)
+        # hidden_states: [batch_size, 1, hidden_dim]
+        # vqa_features: [batch_size, channels, depth, height, width]
+        
+        original_shape = vqa_features.shape
+        b, c, d, h, w = original_shape
+        
+        # 将VQA特征转换为2D表示
+        vqa_flat = vqa_features.view(b, c, -1).permute(0, 2, 1)  # [b, d*h*w, c]
+        
+        # 1. 注意力路径 - 将VQA特征投影到hidden_dim
+        query = self.query_proj(vqa_flat)  # [b, d*h*w, hidden_dim]
+        attn_output, _ = self.attention(query, hidden_states, hidden_states)
+        attn_output = self.norm1(query + attn_output)
+        
+        # 2. 直接投影路径 - 将hidden_states投影到vqa_dim 直接融合
+        hidden_proj = self.hidden_proj(hidden_states)  # [b, 1, vqa_dim]
+        spatial_size = vqa_flat.shape[1]
+        hidden_expanded = hidden_proj.expand(-1, spatial_size, -1)  # [b, d*h*w, vqa_dim]
+        direct_fusion = torch.cat([vqa_flat, hidden_expanded], dim=-1)
+        direct_output = self.direct_fusion(direct_fusion)
+        direct_output = self.direct_norm(vqa_flat + direct_output)
+        
+        # 3. 组合两条路径
+        vqa_context = torch.cat([vqa_flat, attn_output], dim=-1)
+        attn_fusion = self.fusion_layer(vqa_context)
+        combined = self.norm2(direct_output + attn_fusion)
+        
+        # 4. 重塑回原始形状并进行最终的残差连接
+        fused = combined.permute(0, 2, 1).view(b, c, d, h, w)
+        fused = fused.to(vqa_features.dtype)
+        
+        # 最终残差连接
+        fused = vqa_features + fused
+        
+        # 为应用最终的LayerNorm，需要重塑、应用、再重塑回来
+        fused_flat = fused.view(b, c, -1).permute(0, 2, 1)
+        fused_flat = self.final_norm(fused_flat)
+        fused = fused_flat.permute(0, 2, 1).view(b, c, d, h, w)
+        
+        return fused
+    
 
 class QualityOwl3Model(nn.Module):
     def __init__(
@@ -31,7 +102,7 @@ class QualityOwl3Model(nn.Module):
         model_path = "iic/mPLUG-Owl3-7B-241101",
         # 添加 LoRA 相关参数
         lora_r=8,
-        lora_alpha=16,
+        lora_alpha=None,
         lora_dropout=0.05,
         trainable_prompt=True
     ):
@@ -39,10 +110,11 @@ class QualityOwl3Model(nn.Module):
 
         self.new_layers = new_layers
         self.quality_encoder = quality_backbone()
+        self.vqa_head = VQAHead()
         self.grad_flag = False
         # 保存 LoRA 参数
         self.lora_r = lora_r
-        self.lora_alpha = lora_alpha
+        self.lora_alpha = lora_alpha if lora_alpha is not None else 2 * lora_r
         self.lora_dropout = lora_dropout
         self.trainable_prompt = trainable_prompt
 
@@ -59,31 +131,6 @@ class QualityOwl3Model(nn.Module):
             attn_implementation="flash_attention_2",
             torch_dtype=torch.bfloat16,
         )
-
-        LLM_lora = deepcopy(self.LLM)
-        self.LLM.requires_grad_(False)
-        
-        # 为new_layers之后的层添加LoRA
-        if hasattr(self, 'lora_r') and self.lora_r > 0:
-            # 确定要添加LoRA的层索引
-            num_layers = len(self.LLM.language_model.model.layers)
-            target_layer_idx = [i for i in range(self.new_layers[-1]-1, num_layers)] #max(self.new_layers) if self.new_layers else 0
-        
-            # 创建LoRA配置
-            peft_config = LoraConfig(
-                task_type=TaskType.CAUSAL_LM,
-                inference_mode=False,
-                r=self.lora_r,
-                lora_alpha=self.lora_alpha,
-                lora_dropout=self.lora_dropout,
-                target_modules=["q_proj", "k_proj", "o_proj"],
-            )
-
-            # 对target_layer_idx应用LoRA
-            get_peft_model(LLM_lora.language_model.model, peft_config)
-            for l in target_layer_idx:
-                self.LLM.language_model.model.layers[l] = LLM_lora.language_model.model.layers[l]
-
 
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
         self.processor = self.LLM.init_processor(self.tokenizer)
@@ -105,7 +152,7 @@ class QualityOwl3Model(nn.Module):
         nn.init.xavier_normal_(self.prompt_embeddings.weight)
 
         # 2. 获取目标字符串的Token embedding
-        init_prompt_str = "Analize from details, how would you rate the quality of this image?"
+        init_prompt_str = "Analize from details, how would you rate the quality of this video?"
         with torch.no_grad():
             encoded = self.tokenizer(
                 init_prompt_str, return_tensors="pt"
@@ -126,15 +173,24 @@ class QualityOwl3Model(nn.Module):
         # 4. 覆写prompt_embeddings的前seq_len行
         self.prompt_embeddings.weight.data[:seq_len] = question_embeds.data
 
+        self.fuse_layer = AttentionFusion(self.LLM.embed_dim, 768)
 
         self.load_frozen_state_dict()
+        self.set_gradient()
+        if hasattr(self, 'lora_r') and self.lora_r > 0:
+            self.set_lora()
 
     def load_frozen_state_dict(self):
-        # ...原有代码保持不变...
+
         self.quality_encoder.load_state_dict(
             torch.load("exps/weights/fragments_model.pth", map_location="cpu"),
             strict=True,
         )
+        self.vqa_head.load_state_dict(
+            torch.load("exps/weights/vqa_head.pth", map_location="cpu"),
+            strict=True,
+        )
+
         self.logi_indices = torch.load("exps/lsvq/indices_lsvq.pt", map_location="cpu")
         sentiment_weight = torch.load(
             "exps/lsvq/linear300_0.7911.pth", map_location="cpu"
@@ -142,9 +198,11 @@ class QualityOwl3Model(nn.Module):
         self.linear_sw = nn.Linear(300, 1)
         self.linear_sw.load_state_dict(sentiment_weight)
     
-        # 冻结所有参数
+    def set_gradient(self):
         self.quality_encoder.requires_grad_(False)
-        
+        self.vqa_head.requires_grad_(True)
+        self.fuse_layer.requires_grad_(True)
+
         # 为v_kv_proj单独设置梯度
         for l in self.new_layers:
             self.LLM.language_model.model.layers[
@@ -152,12 +210,51 @@ class QualityOwl3Model(nn.Module):
             ].self_attn.v_kv_proj.requires_grad_(True)
         
 
+
         # 其他参数设置
         self.quality2text_model.requires_grad_(True)
         # 冻结LLM的embedding层
         self.LLM.language_model.model.embed_tokens.requires_grad_(False)
         # 只训练prompt embedding
         self.prompt_embeddings.requires_grad_(self.trainable_prompt)
+
+    def set_lora(self):
+        LLM_lora = deepcopy(self.LLM)
+        self.LLM.requires_grad_(False)
+        
+        # 为new_layers之后的层添加LoRA
+        
+        # 确定要添加LoRA的层索引
+        num_layers = len(self.LLM.language_model.model.layers)
+        # target_layer_idx = [i for i in range(25, num_layers)] # 从最后一个image_embeds交互时开始lora微调
+        target_layer_idx = [i for i in range(self.new_layers[-1]-1, num_layers)] # 只微调quality_embeds交互时的lora
+    
+        # 创建LoRA配置
+        peft_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            inference_mode=False,
+            r=self.lora_r,
+            lora_alpha=self.lora_alpha,
+            lora_dropout=self.lora_dropout,
+            target_modules=["q_proj", "k_proj", "o_proj"],
+        )
+
+        # 对target_layer_idx应用LoRA
+        get_peft_model(LLM_lora.language_model.model, peft_config)
+        for l in target_layer_idx:
+            self.LLM.language_model.model.layers[l] = LLM_lora.language_model.model.layers[l]
+
+        # # set lora to vqahead
+        # head_peft_config = LoraConfig(
+        #     task_type=TaskType.FEATURE_EXTRACTION,  # 特征提取任务
+        #     inference_mode=False,  # 训练模式
+        #     r=self.lora_r,  # LoRA秩
+        #     lora_alpha=self.lora_alpha,  # LoRA缩放
+        #     lora_dropout=self.lora_dropout,  # LoRA dropout
+        #     # 针对Conv3d层的q, k, v投影
+        #     target_modules=["fc_hid", "fc_last"],
+        # )
+        # self.vqa_head = get_peft_model(self.vqa_head, head_peft_config)
 
 
     def HyperQwen2Model_forward(
@@ -479,7 +576,9 @@ class QualityOwl3Model(nn.Module):
         if labels is not None:
             last_logits = logits[..., -1, :].contiguous()
             top_logits = last_logits[:,self.logi_indices]
-            score = self.linear_sw(top_logits).squeeze(-1)
+            # score = self.linear_sw(top_logits).squeeze(-1)
+            fused_features = self.fuse_layer(hidden_states, self.quality_features)
+            score = self.vqa_head(fused_features).mean((-1,-2,-3,-4))  # [B, 1]
             plccloss = self.plcc_loss(score, labels)
             rankloss = self.rank_loss(score, labels)
             loss = (plccloss, rankloss, score)
@@ -554,12 +653,11 @@ class QualityOwl3Model(nn.Module):
     
         # 处理视觉信息，不需要梯度
         with torch.no_grad():
-            quality_features = self.quality_encoder(technical)  # [B, C, D, H, W]
+            self.quality_features = self.quality_encoder(technical)  # [B, C, D, H, W]
             image_embeds = self.LLM.forward_image(batched_inputs.pop("pixel_values"))
 
-        qf = rearrange(quality_features, "b c d h w -> (b d) (h w) c")
+        qf = rearrange(self.quality_features, "b c d h w -> (b d) (h w) c")
         quality_embed = self.quality2text_model(qf).bfloat16()
-    
         
         outputs = self.HyperQwen2ForCausalLM_forward(
             image_embeds=image_embeds,
@@ -569,7 +667,7 @@ class QualityOwl3Model(nn.Module):
         )
 
         # 显存不足，删除一些不需要的变量  #和模型参数
-        del quality_features, qf, image_embeds, aesthetic, technical, labels
+        del qf, image_embeds, aesthetic, technical, labels
         torch.cuda.empty_cache()
     
         return outputs
@@ -578,14 +676,14 @@ class QualityOwl3Model(nn.Module):
     def dev(self):
         return self.LLM.device
 
-
+    
 
 
 
 
 if __name__ == "__main__":
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = QualityOwl3Model().to(dev)
+    model = QualityOwl3Model(new_layers=[28], lora_r=32, trainable_prompt=False).to(dev)
     # logits=[]
     # names=[]
     # with torch.no_grad():

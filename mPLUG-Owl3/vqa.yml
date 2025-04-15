@@ -135,6 +135,28 @@ test:
                 frame_interval: 2
                 t_frag: 8
                 num_clips: 1
+    konvid1k:
+        type: ViewDecompositionDataset
+        phase: test
+        anno_file: examplar_data_labels/KoNViD/labels.txt
+        data_prefix: /home/ippl/SJB/KoNViD_1k
+        sample_types:
+            technical:
+                fragments_h: 7
+                fragments_w: 7
+                fsize_h: 32
+                fsize_w: 32
+                aligned: 16
+                clip_len: 32
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
+            aesthetic:
+                clip_len: 16
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
+
     lsvq-test:
         type: ViewDecompositionDataset
         phase: test
@@ -179,24 +201,3 @@ test:
                 t_frag: 8
                 num_clips: 1
 
-    konvid1k:
-        type: ViewDecompositionDataset
-        phase: test
-        anno_file: examplar_data_labels/KoNViD/labels.txt
-        data_prefix: /home/ippl/SJB/KoNViD_1k
-        sample_types:
-            technical:
-                fragments_h: 7
-                fragments_w: 7
-                fsize_h: 32
-                fsize_w: 32
-                aligned: 16
-                clip_len: 32
-                frame_interval: 2
-                t_frag: 8
-                num_clips: 1
-            aesthetic:
-                clip_len: 16
-                frame_interval: 2
-                t_frag: 8
-                num_clips: 1

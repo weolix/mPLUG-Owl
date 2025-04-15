@@ -468,6 +468,14 @@ def dict_simply_collate(batch):
     data["gt_label"] = torch.FloatTensor(data["gt_label"])
     return data
 
+def list_collate(batch):
+    # batch is a list of tuples
+    n = len(batch[0])
+    data = []
+    for i in range(n):
+        data.append([batch[j][i] for j in range(len(batch))])
+    data.append(torch.FloatTensor(data.pop()))
+    return data
 
 if __name__ == "__main__":
     import yaml

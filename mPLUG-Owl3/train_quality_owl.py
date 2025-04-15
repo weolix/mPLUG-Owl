@@ -6,6 +6,10 @@ os.environ["AV_LOG_LEVEL"] = "quiet"
 os.environ["FFMPEG_LOGLEVEL"] = "quiet" 
 
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+import argparse
 from scipy.stats import spearmanr, pearsonr
 from torch.utils.data import DataLoader
 import dataset
@@ -15,8 +19,8 @@ import tqdm, time
 import torch.optim as optim
 from transformers import Trainer, TrainingArguments
 from torch.utils.tensorboard import SummaryWriter
+device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
 
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 date_str = time.strftime("%Y-%m-%d", time.localtime())
 time_str = time.strftime("%H:%M:%S", time.localtime())
 run_dir = f"runs/{date_str}/{time_str}"
@@ -42,36 +46,37 @@ def trainq(model, val_datasets, optimizer, hylayers, gradient_accumulation_steps
         for name, data in val_datasets["train"].items():
             dataloader = DataLoader(data, batch_size=4, shuffle=True, num_workers=8, collate_fn=dataset.dict_simply_collate)
             for i, batch in enumerate(tqdm.tqdm(dataloader, desc=f"Epoch {epoch+1}", ncols=100)):
-                aesthetic = batch["aesthetic"]
-                technical = batch["technical"] 
-                labels = batch["gt_label"].to(model.LLM.device)
+                if isinstance(batch, dict):
+                    aesthetic = batch["aesthetic"]
+                    technical = batch["technical"] 
+                    labels = batch["gt_label"].to(model.LLM.device)
+                else:
+                    aesthetic = batch[0]
+                    labels = batch[1].to(model.LLM.device)
 
                 outputs = model(aesthetic=aesthetic, technical=technical, labels=labels)
                 plccloss, rankloss, score = outputs.loss
-                loss = plccloss #+ rankloss
                 
-                # 梯度累积：除以累积步数来缩放损失
-                loss = loss / gradient_accumulation_steps
-                loss.backward()
-                
-                # 记录loss和其他指标
-                current_loss = loss.item() * gradient_accumulation_steps  # 还原为原始损失值以便记录
+                # 记录loss和其他指标，不管是否更新都记录
+                current_loss = plccloss.item()
                 total_loss += current_loss
                 
                 pred_scores.extend(score.detach().cpu().tolist())
                 gt_scores.extend(labels.detach().cpu().tolist())
                 
-                # 每gradient_accumulation_steps步更新一次参数
-                if (i + 1) % gradient_accumulation_steps == 0 or (i + 1) == len(dataloader):
-                    optimizer.step()
-                    optimizer.zero_grad()
+                loss = plccloss  # 如果需要也可以加上rankloss: loss = plccloss + rankloss
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
                     
-                    # 记录到tensorboard
-                    writer.add_scalar("Loss/step", current_loss, global_step)
-                    global_step += 1
+                # 记录到tensorboard
+                writer.add_scalar("Loss/step", current_loss, global_step)
+                global_step += 1
 
                 # 清理不需要的变量
-                del outputs, plccloss, rankloss, score, loss
+                del outputs, plccloss, rankloss, score
+                if 'loss' in locals():
+                    del loss
                 torch.cuda.empty_cache()  # 定期清理GPU缓存
 
             writer.add_scalar("Loss/epoch", total_loss, epoch)
@@ -113,81 +118,28 @@ def trainq(model, val_datasets, optimizer, hylayers, gradient_accumulation_steps
                     if hasattr(module, 'lora_A') or hasattr(module, 'lora_B'):
                         # 对于PEFT库的LoRA实现，需要提取特定状态
                         save_dict['lora_params'][name] = module.state_dict()
+
+            if hasattr(model, 'vqa_head'):
+                save_dict['vqa_head'] = model.vqa_head.state_dict()
+
+            if hasattr(model, 'fuse_layer'):
+                save_dict['fuse_layer'] = model.fuse_layer.state_dict()
             
             # 保存为单个文件
             torch.save(save_dict, f"{run_dir}/model_epoch_{epoch}.pth")
             print(f"model saved at epoch {epoch+1} in {run_dir}")
         except Exception as e:
             print(f"保存失败: {e}")
-
-        # EMA (Exponential Moving Average) implementation
-        # Create EMA parameters if it's not the first epoch
-        if epoch > 0:
-            try:
-                # Load the previous epoch's model
-                prev_checkpoint = torch.load(f"{run_dir}/model_epoch_{epoch-1}.pth")
-                
-                # Apply EMA to quality2text model parameters
-                ema_decay = 0.9  # EMA decay factor (adjust as needed)
-                current_q2t_state = model.quality2text_model.state_dict()
-                prev_q2t_state = prev_checkpoint['q2t_state']
-                
-                for key in current_q2t_state:
-                    if key in prev_q2t_state:
-                        current_q2t_state[key] = ema_decay * prev_q2t_state[key] + (1 - ema_decay) * current_q2t_state[key]
-                
-                model.quality2text_model.load_state_dict(current_q2t_state)
-                
-                # Apply EMA to attention layers
-                for layer_idx in hylayers:
-                    layer_key = f'layer_{layer_idx}'
-                    if layer_key in prev_checkpoint['attn_states']:
-                        current_attn_state = model.LLM.language_model.model.layers[layer_idx-1].self_attn.v_kv_proj.state_dict()
-                        prev_attn_state = prev_checkpoint['attn_states'][layer_key]
-                        
-                        for key in current_attn_state:
-                            if key in prev_attn_state:
-                                current_attn_state[key] = ema_decay * prev_attn_state[key] + (1 - ema_decay) * current_attn_state[key]
-                        
-                        model.LLM.language_model.model.layers[layer_idx-1].self_attn.v_kv_proj.load_state_dict(current_attn_state)
-                
-                print(f"Applied EMA with decay {ema_decay} from epoch {epoch} weights")
-            except Exception as e:
-                print(f"Failed to apply EMA: {e}")
-
-
-       # 验证
+    
+    
+        # 验证
         model.eval()
         for name, data in val_datasets["test"].items():
-            valdataloader = DataLoader(data, batch_size=5, shuffle=True, num_workers=8, collate_fn=dataset.dict_simply_collate)
-            
-            with torch.no_grad():
-                val_pred_scores = []
-                val_gt_scores = []
-                for i, batch in enumerate(tqdm.tqdm(valdataloader, desc=f"{name} Validation", ncols=100)):
-                    aesthetic = batch["aesthetic"]
-                    technical = batch["technical"] 
-                    labels = batch["gt_label"].to(model.LLM.device)
-
-                    outputs = model(aesthetic=aesthetic, technical=technical, labels=labels)
-                    plccloss, rankloss, score = outputs.loss
-                    val_pred_scores += (score.cpu().tolist())
-                    val_gt_scores += (labels.cpu().tolist())
-                
-                    # 清理不需要的变量
-                    del batch, aesthetic, technical, labels, outputs, plccloss, rankloss, score
-                    torch.cuda.empty_cache()  # 定期清理GPU缓存
-                
-                val_pred_scores = torch.tensor(val_pred_scores)
-                val_gt_scores = torch.tensor(val_gt_scores)
-                spearmanrcc = spearmanr(val_pred_scores, val_gt_scores)
-                pearsonrcc = pearsonr(val_pred_scores, val_gt_scores)
-                writer.add_scalar(f"Spearmanr/val-{name}", spearmanrcc[0], epoch)
-                writer.add_scalar(f"Pearsonr/val-{name}", pearsonrcc[0], epoch)
-                print(f"{name} eval Spearmanr: {spearmanrcc[0]:.4f}, Pearsonr: {pearsonrcc[0]:.4f}")
-        
+            spearmanrcc, pearsonrcc = evaluate(model, data)
+            print(f"{name} eval Spearmanr: {spearmanrcc[0]:.4f}, Pearsonr: {pearsonrcc[0]:.4f}")
+            writer.add_scalar(f"Spearmanr/val-{name}", spearmanrcc[0], epoch)
+            writer.add_scalar(f"Pearsonr/val-{name}", pearsonrcc[0], epoch)
  
-
         scheduler.step()
     writer.close()
 
@@ -195,31 +147,38 @@ def trainq(model, val_datasets, optimizer, hylayers, gradient_accumulation_steps
 def evaluate(model, val_dataset):
     # 验证
     model.eval()
-
     valdataloader = DataLoader(val_dataset, batch_size=5, shuffle=True, num_workers=8, collate_fn=dataset.dict_simply_collate)
     
     with torch.no_grad():
         val_pred_scores = []
         val_gt_scores = []
         for i, batch in enumerate(tqdm.tqdm(valdataloader, desc=f"Validation", ncols=100)):
-            aesthetic = batch["aesthetic"]
-            technical = batch["technical"] 
-            labels = batch["gt_label"].to(model.LLM.device)
+            if isinstance(batch, dict):
+                aesthetic = batch["aesthetic"]
+                technical = batch["technical"] 
+                labels = batch["gt_label"].to(model.LLM.device)
+            else:
+                aesthetic = batch[0]
+                labels = batch[1].to(model.LLM.device)
 
             outputs = model(aesthetic=aesthetic, technical=technical, labels=labels)
             plccloss, rankloss, score = outputs.loss
             val_pred_scores += (score.cpu().tolist())
             val_gt_scores += (labels.cpu().tolist())
+        
+            # 清理不需要的变量
+            del batch, aesthetic, technical, labels, outputs, plccloss, rankloss, score
+            torch.cuda.empty_cache()  # 定期清理GPU缓存
+        
         val_pred_scores = torch.tensor(val_pred_scores)
         val_gt_scores = torch.tensor(val_gt_scores)
         spearmanrcc = spearmanr(val_pred_scores, val_gt_scores)
         pearsonrcc = pearsonr(val_pred_scores, val_gt_scores)
-
-        print(f"eval Spearmanr: {spearmanrcc[0]:.4f}, Pearsonr: {pearsonrcc[0]:.4f}")
+    return spearmanrcc, pearsonrcc
         
 
 
-def load_model(model, load_run, load_epoch=None, hylayers=[28], optimizer=None, scheduler=None):
+def load_model(model, load_run, load_epoch=None, hylayers=None, optimizer=None, scheduler=None):
     """
     加载模型参数
     
@@ -273,6 +232,16 @@ def load_model(model, load_run, load_epoch=None, hylayers=[28], optimizer=None, 
                         module.load_state_dict(checkpoint['lora_params'][name])
                         lora_loaded_count += 1
             print(f"✓ 成功加载{lora_loaded_count}个LoRA模块参数")
+        
+        # 加载vqa_head参数（如果存在）
+        if 'vqa_head' in checkpoint and hasattr(model, 'vqa_head'):
+            model.vqa_head.load_state_dict(checkpoint['vqa_head'])
+            print(f"✓ 成功加载vqa_head参数")
+
+        # 加载fuse_layer参数（如果存在）
+        if 'fuse_layer' in checkpoint and hasattr(model, 'fuse_layer'):
+            model.fuse_layer.load_state_dict(checkpoint['fuse_layer'])
+            print(f"✓ 成功加载fuse_layer参数")
 
         # 加载优化器状态（如果提供）
         if optimizer is not None and 'optimizer_state' in checkpoint:
@@ -284,7 +253,7 @@ def load_model(model, load_run, load_epoch=None, hylayers=[28], optimizer=None, 
             scheduler.load_state_dict(checkpoint['scheduler_state'])
             print(f"✓ 成功加载学习率调度器状态")
         
-        print(f"✓ 模型成功从{load_run}/model_epoch_{load_epoch}.pth加载")
+        print(f"✓ 模型成功从{load_run}加载")
         return model, optimizer, scheduler
     except Exception as e:
         print(f"❌ 加载模型时出错: {e}")
@@ -293,10 +262,9 @@ def load_model(model, load_run, load_epoch=None, hylayers=[28], optimizer=None, 
 
 
 def main():
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # 加载配置文件，假设 data.yml 中包含训练参数
-    opt = yaml.safe_load(open("data.yml", "r"))
+    opt = yaml.safe_load(open("vqa.yml", "r"))
     val_datasets = {}
     for phase, datasets in opt.items():
         val_datasets[phase] = {}
@@ -311,7 +279,7 @@ def main():
         28, # add
     ]
     # 启用trainable_prompt设为True
-    model = QualityOwl3Model(new_layers=hylayers, lora_r=8, trainable_prompt=False)
+    model = QualityOwl3Model(new_layers=hylayers, lora_r=8, trainable_prompt=False).to(device)
 
     
     # 收集所有需要优化的参数
@@ -339,6 +307,15 @@ def main():
             if 'lora_' in name and param.requires_grad:
                 lora_params = {'params': param, 'lr': 2e-5}  # 可以为LoRA使用不同的学习率
                 params_to_optimize.append(lora_params)
+
+    # 5. vqa_head参数
+    if hasattr(model, 'vqa_head'):
+        vqa_params = {'params': model.vqa_head.parameters(), 'lr': 2e-5}
+        params_to_optimize.append(vqa_params)
+
+    if hasattr(model, "fuse_layer"):
+        fuse_params = {'params': model.fuse_layer.parameters(), 'lr': 2e-5}
+        params_to_optimize.append(fuse_params)
     
     # 创建AdamW优化器，使用收集到的所有参数
     optimizer = optim.AdamW(
@@ -348,13 +325,24 @@ def main():
         weight_decay=0.01
     )
 
-    model, optimizer, _ = load_model(model, "runs/2025-03-10/19:47:58/model_epoch_2.pth", None, hylayers, optimizer).to(device)
-    # 训练 quality brance
+    model, optimizer, _ = load_model(model, "runs/2025-03-10/19:47:58/model_epoch_2.pth", None, hylayers, optimizer)
+
+    # model.LLM.requires_grad_(False)  # 冻结原有的LLM参数
     trainq(model, val_datasets, optimizer, hylayers, gradient_accumulation_steps=1)
 
+    # # evaluate
+    # model.eval()
+    # for name, data in val_datasets["test"].items():
+    #     spearmanrcc, pearsonrcc = evaluate(model, data)
+    #     print(f"{name} eval Spearmanr: {spearmanrcc[0]:.4f}, Pearsonr: {pearsonrcc[0]:.4f}")
+    #     writer.add_scalar(f"Spearmanr/val-{name}", spearmanrcc[0] )
+    #     writer.add_scalar(f"Pearsonr/val-{name}", pearsonrcc[0])
 
 if __name__ == "__main__":
     main()
+
     # TODO 词向量相似度
     # FINISH × Prompt-tuning 
     # FINISH HYPERLAYER后添加LORA
+
+    # TODO 训练时同时训练大模型和vqahead

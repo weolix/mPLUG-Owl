@@ -32,7 +32,7 @@ def global_position_index(
     frags_h = torch.arange(fragments[1])
     frags_w = torch.arange(fragments[2])
     frags = torch.stack(
-        torch.meshgrid(frags_d, frags_h, frags_w)
+        torch.meshgrid(frags_d, frags_h, frags_w, indexing="ij")
     ).float()  # 3, Fd, Fh, Fw
     coords = (
         torch.nn.functional.interpolate(frags[None].to(device), size=(D, H, W))
@@ -216,7 +216,7 @@ class WindowAttention3D(nn.Module):
         coords_h = torch.arange(self.window_size[1])
         coords_w = torch.arange(self.window_size[2])
         coords = torch.stack(
-            torch.meshgrid(coords_d, coords_h, coords_w)
+            torch.meshgrid(coords_d, coords_h, coords_w, indexing="ij")
         )  # 3, Wd, Wh, Ww
         coords_flatten = torch.flatten(coords, 1)  # 3, Wd*Wh*Ww
         relative_coords = (
@@ -488,13 +488,13 @@ class SwinTransformerBlock3D(nn.Module):
         shortcut = x
         if not self.jump_attention:
             if self.use_checkpoint:
-                x = checkpoint.checkpoint(self.forward_part1, x, mask_matrix, resized_window_size)
+                x = checkpoint.checkpoint(self.forward_part1, x, mask_matrix, resized_window_size, use_reentrant=False)
             else:
                 x = self.forward_part1(x, mask_matrix, resized_window_size)
             x = shortcut + self.drop_path(x)
 
         if self.use_checkpoint:
-            x = x + checkpoint.checkpoint(self.forward_part2, x)
+            x = x + checkpoint.checkpoint(self.forward_part2, x, use_reentrant=False)
         else:
             x = x + self.forward_part2(x)
 
