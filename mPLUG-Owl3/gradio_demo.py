@@ -176,7 +176,7 @@ def encode_video(video):
         vr = VideoReader(video.path, ctx=cpu(0))
     else:
         vr = VideoReader(video.file.path, ctx=cpu(0))
-    sample_fps = round(vr.get_avg_fps() / 1)  # FPS
+    sample_fps = round(vr.get_avg_fps() / 0.5)  # FPS
     frame_idx = [i for i in range(0, len(vr), sample_fps)]
     if len(frame_idx)>MAX_NUM_FRAMES:
         frame_idx = uniform_sample(frame_idx, MAX_NUM_FRAMES)

@@ -1,6 +1,6 @@
 
 train:
-    koniq:
+    koniq10k:
         type: ImageJsonDataset
         args:
             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
@@ -20,7 +20,7 @@ train:
 
 
 test:
-    koniq:
+    koniq10k:
         type: ImageJsonDataset
         args:
             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
@@ -98,27 +98,27 @@ test:
                 t_frag: 8
                 num_clips: 1
 
-    lsvq-test:
-        type: video_dataset
-        args:
-            phase: test
-            anno_file: examplar_data_labels/LSVQ/test_labels.txt
-            data_prefix: /home/ippl/datasets/LSVQ/videos
-            sample_types:
-                clip_len: 16
-                frame_interval: 2
-                t_frag: 8
-                num_clips: 1  
+    # lsvq-test:
+    #     type: video_dataset
+    #     args:
+    #         phase: test
+    #         anno_file: examplar_data_labels/LSVQ/test_labels.txt
+    #         data_prefix: /home/ippl/datasets/LSVQ/videos
+    #         sample_types:
+    #             clip_len: 16
+    #             frame_interval: 2
+    #             t_frag: 8
+    #             num_clips: 1  
 
-    lsvq-1080p:
-        type: video_dataset
-        args:
-            phase: test
-            anno_file: /home/ippl/datasets/LSVQ/labels_1080p.txt
-            data_prefix: /home/ippl/datasets/LSVQ/videos
-            sample_types:
-                clip_len: 16
-                frame_interval: 2
-                t_frag: 8
-                num_clips: 1
+    # lsvq-1080p:
+    #     type: video_dataset
+    #     args:
+    #         phase: test
+    #         anno_file: /home/ippl/datasets/LSVQ/labels_1080p.txt
+    #         data_prefix: /home/ippl/datasets/LSVQ/videos
+    #         sample_types:
+    #             clip_len: 16
+    #             frame_interval: 2
+    #             t_frag: 8
+    #             num_clips: 1
 

@@ -1,4 +1,5 @@
 from copy import deepcopy
+import pandas as pd
 import tqdm
 import torch, sys, transformers, os
 import torch.nn as nn
@@ -7,9 +8,11 @@ from typing import List, Optional, Tuple, Union
 import dataset
 from swin_backbone import SwinTransformer3D as quality_backbone
 from dover import VQABackbone, VQAHead
+import ffmpeg
 from decord import VideoReader, cpu
 from PIL import Image
 from torchvision import transforms
+from exps import fitting
 from einops import rearrange, repeat
 import random
 
@@ -45,13 +48,26 @@ import tqdm, time
 import torch.optim as optim
 from transformers import Trainer, TrainingArguments
 from torch.utils.tensorboard import SummaryWriter
-device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
 
-date_str = time.strftime("%Y-%m-%d", time.localtime())
-time_str = time.strftime("%H:%M:%S", time.localtime())
-run_dir = f"runs/{date_str}/{time_str}"
-writer = SummaryWriter(run_dir)
     
+def rank_loss(y_pred, y):
+    ranking_loss = torch.nn.functional.relu(
+        (y_pred - y_pred.t()) * torch.sign((y.t() - y))
+    )
+    scale = 1 + torch.max(ranking_loss)
+    return (
+        torch.sum(ranking_loss) / y_pred.shape[0] / (y_pred.shape[0] - 1) / scale
+    ).float()
+
+def plcc_loss(y_pred, y):
+    sigma_hat, m_hat = torch.std_mean(y_pred, unbiased=False)
+    y_pred = (y_pred - m_hat) / (sigma_hat + 1e-8)
+    sigma, m = torch.std_mean(y, unbiased=False)
+    y = (y - m) / (sigma + 1e-8)
+    loss0 = torch.nn.functional.mse_loss(y_pred, y) / 4
+    rho = torch.mean(y_pred * y)
+    loss1 = torch.nn.functional.mse_loss(rho * y_pred, y) / 4
+    return ((loss0 + loss1) / 2).float()# + 0.3 * rank_loss(y_pred[...,None], y[...,None])
 
 class QualityOwl3Model(nn.Module):
     def __init__(
@@ -451,8 +467,8 @@ class QualityOwl3Model(nn.Module):
             last_logits = logits[..., -1, :].contiguous()
             top_logits = last_logits[:,self.logi_indices]
             score = self.linear_sw(top_logits).squeeze(-1)
-            plccloss = self.plcc_loss(score, labels)
-            rankloss = self.rank_loss(score, labels)
+            plccloss = plcc_loss(score, labels)
+            rankloss = rank_loss(score, labels)
             loss = (plccloss, rankloss, score)
 
         if not return_dict:
@@ -468,45 +484,26 @@ class QualityOwl3Model(nn.Module):
         )
 
         return outputs
+    
 
-
-    def rank_loss(self, y_pred, y):
-        ranking_loss = torch.nn.functional.relu(
-            (y_pred - y_pred.t()) * torch.sign((y.t() - y))
-        )
-        scale = 1 + torch.max(ranking_loss)
-        return (
-            torch.sum(ranking_loss) / y_pred.shape[0] / (y_pred.shape[0] - 1) / scale
-        ).float()
-
-    def plcc_loss(self, y_pred, y):
-        sigma_hat, m_hat = torch.std_mean(y_pred, unbiased=False)
-        y_pred = (y_pred - m_hat) / (sigma_hat + 1e-8)
-        sigma, m = torch.std_mean(y, unbiased=False)
-        y = (y - m) / (sigma + 1e-8)
-        loss0 = torch.nn.functional.mse_loss(y_pred, y) / 4
-        rho = torch.mean(y_pred * y)
-        loss1 = torch.nn.functional.mse_loss(rho * y_pred, y) / 4
-        return ((loss0 + loss1) / 2).float()# + 0.3 * rank_loss(y_pred[...,None], y[...,None])
-
-    def processor(self, image_or_video):
+    def processor(self, data_and_info):
+        image_or_video = [d["data"] for d in data_and_info]
+        media_info = [d["info"] for d in data_and_info]
         media_type = "images" if isinstance(image_or_video[0], Image.Image) else "videos"
         batch_size = len(image_or_video)
         media_token = {"images": "<|image|>", "videos": "<|video|>"}
 
         # 准备批处理数据 (保持不变)
         batched_messages = []
-        batched_media = []
         for i in range(batch_size):
             messages = [
                 {
                     "role": "user",
-                    "content": f"{media_token[media_type]}Analize from details, how would you rate the quality of this video?",
+                    "content": f"{media_token[media_type]}The infomation of the {media_type[:-1]} is as follows:{media_info[i]}, how would you rate the quality of this {media_type[:-1]}?",
                 },
                 {"role": "assistant", "content": "The quality of the image is very"},
             ]
             batched_messages.append(messages)
-            batched_media.append(image_or_video[i])
 
         # --- 开始手动处理和填充 ---
         processed_outputs = []
@@ -515,12 +512,12 @@ class QualityOwl3Model(nn.Module):
         # 1. 逐个处理样本
         for i in range(batch_size):
             current_messages = batched_messages[i]
-            current_media = [batched_media[i]] # LLMprocessor 可能期望列表
+            current_media = [image_or_video[i]] # LLMprocessor 可能期望列表
 
             # 准备单个样本的输入字典
             single_process_dict = {
                 "messages": current_messages,
-                 media_type: current_media, # 传递单个媒体项的列表
+                media_type: current_media, # 传递单个媒体项的列表
                 "preface": True
             }
 
@@ -634,7 +631,7 @@ class QualityOwl3Model(nn.Module):
 
     def forward(self, image_or_video=None, labels=None, **args):
 
-        batched_inputs = self.processor(image_or_video=image_or_video)
+        batched_inputs = self.processor(image_or_video)
 
         with torch.no_grad():
             image_embeds = self.LLM.forward_image(batched_inputs.pop("pixel_values"))
@@ -680,9 +677,23 @@ class video_dataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         video = self.video_infos[idx]
         video_path = video["filename"]
+
+        metadata = ffmpeg.probe(video_path)
+        meta_stream = metadata["streams"][0]
+
+        video_inf = {
+            # "file size": f"{os.path.getsize(metadata["format"]["filename"])/1048576 :.2f}MB",
+            # "duration": f"{float(meta_stream["duration"]):.0f}s",
+            "resolution": f"{meta_stream['width']}x{meta_stream['height']}",
+            "frame rate": f"{eval(meta_stream['avg_frame_rate']):.2f}fps",
+            "bit rate": f"{int(meta_stream['bit_rate'])//1000}Kbps",
+            "codec": meta_stream["codec_name"],
+        }
+
         a, t, video_label = video["label"]
         video_frames = encode_video(video_path, num_frames=self.sample_types["clip_len"])
-        return video_frames, video_label
+        video = {"info": video_inf, "data": video_frames}
+        return video, video_label
     
 
 class ImageJsonDataset(torch.utils.data.Dataset):
@@ -697,10 +708,18 @@ class ImageJsonDataset(torch.utils.data.Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        img_path = self.data[idx]['image']
+        img_path = self.dir + "/" + self.data[idx]['image']
         label = self.data[idx]['score']
-        image = Image.open(self.dir+"/"+img_path).convert('RGB')
-        return image, label
+        image = Image.open(img_path).convert('RGB')
+        width, height = image.size
+        file_format = os.path.basename(img_path).split(".")[-1].upper()
+        image_inf = {
+            "Format": image.format if image.format else file_format,
+            "File Size": f"{os.path.getsize(img_path)>>10:.0f}KB",
+            "Resolution": f"{width}x{height}",
+        }
+        img = {"info": image_inf, "data": image}
+        return img, label
     
     def collate_fn(self, batch):
         images, labels = zip(*batch)
@@ -737,22 +756,92 @@ def encode_video(video_path, num_frames=16, random_sampling=True):
     return frames
 
 def trainq(model, val_datasets, optimizer, bsz=4):
-    epochs = 10
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.5)
 
+    # 训练模型
+    if model.linear_sw.bias.requires_grad:
+        # get logits indices
+        logits = []
+        scores = []
+        model.eval()
+        with torch.no_grad():
+            for name, data in val_datasets["train"].items():
+                dataloader = DataLoader(data, batch_size=bsz, shuffle=True, num_workers=8, collate_fn=dataset.list_collate)
+                for batch in tqdm.tqdm(dataloader, ncols=100):
+                    image_or_video = batch[0]
+                    labels = batch[1].to(model.LLM.device)
+
+                    outputs = model(image_or_video=image_or_video, labels=labels)
+                    logits.append(outputs.logits[:,-1].cpu())
+                    scores.append(labels.cpu())
+
+            logits_all = torch.cat(logits)
+            lmax = torch.max(logits_all, dim=0)
+            top300max = torch.topk(lmax.values, 300, dim=-1)
+            model.logi_indices = top300max.indices
+            logits_top300 = logits_all[:,top300max.indices]
+            scores_all = torch.cat(scores)
+
+
+        # get logits weights linear_sw
+        for param in model.linear_sw.parameters():
+            param.requires_grad = True
+            nn.init.constant_(param, 0.)
+        logits_top300 = logits_top300.to(device).requires_grad_(True)  # 添加梯度要求
+        scores_all = scores_all.to(device)
+        optimizer_sw = torch.optim.Adam(model.linear_sw.parameters(), lr=1e-3)
+        scheduler_sw = torch.optim.lr_scheduler.StepLR(optimizer_sw, step_size=100, gamma=0.5)
+        for epoch_sw in tqdm.tqdm(range(200)):
+            # 训练正则化的线性回归
+            model.linear_sw.train()
+            model.linear_sw.requires_grad_(True)
+            optimizer_sw.zero_grad()
+            pred_scores = model.linear_sw(logits_top300)
+            l1_norm = sum(p.abs().sum() for p in model.linear_sw.parameters())
+            loss = plcc_loss(pred_scores.squeeze(-1), scores_all)
+            loss.backward()
+            optimizer_sw.step()
+            scheduler_sw.step()
+            
+            # 测试
+            if epoch_sw % 30 != 0:
+                continue
+            model.linear_sw.eval()
+            with torch.no_grad():
+                pred_scores = model.linear_sw(logits_top300)
+            pred_scores = pred_scores.squeeze(-1).detach().cpu().numpy()
+            spearmanrcc, p_value = spearmanr(pred_scores, scores_all.detach().cpu().numpy())
+            print("Spearmanr:", spearmanrcc, "P-value:", p_value)
+
+        model.linear_sw.requires_grad_(False)
+        # 保存模型参数
+        sw_dict = {
+            "linear_sw": model.linear_sw.state_dict(),  # 保存线性回归模型参数
+            "logi_indices": model.logi_indices,          # 保存logits索引
+        }
+        torch.save(sw_dict, f"{run_dir}/linear_sw.pth")
+
+        # 验证测试数据集初始指标, epoch标识为-1
+        model.eval()
+        for name, data in val_datasets["test"].items():
+            spearmanrcc, pearsonrcc = evaluate(model, data, bsz=4)
+            print(f"{name} eval Spearmanr: {spearmanrcc[0]:.4f}, Pearsonr: {pearsonrcc[0]:.4f}")
+
+
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.5)
     global_step = 0
 
+    epochs = 10
     for epoch in range(epochs):
         writer.add_scalar("Learning Rate", optimizer.param_groups[0]["lr"], epoch)
 
-        # 训练
-        model.train()
-        total_loss = 0
-        pred_scores = []
-        gt_scores = []
-        optimizer.zero_grad()  # 在循环开始前清零梯度
+
         
         for name, data in val_datasets["train"].items():
+            # 训练模型主体
+            model.train()
+            total_loss = 0
+            pred_scores = []
+            gt_scores = []
             dataloader = DataLoader(data, batch_size=bsz, shuffle=True, num_workers=8, collate_fn=dataset.list_collate)
             for i, batch in enumerate(tqdm.tqdm(dataloader, desc=f"Epoch {epoch+1}", ncols=100)):
 
@@ -784,7 +873,7 @@ def trainq(model, val_datasets, optimizer, bsz=4):
                     del loss
                 torch.cuda.empty_cache()  # 定期清理GPU缓存
 
-            writer.add_scalar("Loss/epoch", total_loss, epoch)
+            writer.add_scalar(f"train Loss/epoch", total_loss, epoch)
             print(f"Epoch {epoch+1} Average Loss: {total_loss:.4f}")
 
             pred_scores = torch.tensor(pred_scores)
@@ -865,31 +954,36 @@ def evaluate(model, val_dataset, bsz=4):
 
 
 if __name__ == "__main__":
+    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+    print("device: ", device)
 
-    QA_PHASE = "image"
+    date_str = time.strftime("%Y-%m-%d", time.localtime())
+    time_str = time.strftime("%H:%M:%S", time.localtime())
+    run_dir = f"runs/{date_str}/{time_str}"
+    writer = SummaryWriter(run_dir)
     import yaml
-    if QA_PHASE == "image":
-        opt = yaml.safe_load(open("iqa.yml", "r"))
-        val_datasets = {}
-        for phase, datasets in opt.items():
-            if phase not in ["train", "test"]:
-                continue
-            val_datasets[phase] = {}
-            for name, data_args in datasets.items():
-                val_datasets[phase][name] = globals().get(data_args["type"])(**data_args["args"])
-    elif QA_PHASE == "video":
-        opt = yaml.safe_load(open("vqa.yml", "r"))
-        val_datasets = {}
-        for phase, datasets in opt.items():
-            val_datasets[phase] = {}
-            for name, data_args in datasets.items():
-                val_datasets[phase][name] = video_dataset(data_args)
+    data_yml = "iqa.yml"
+    
+    opt = yaml.safe_load(open(data_yml, "r"))
+    val_datasets = {}
+    for phase, datasets in opt.items():
+        if phase not in ["train", "test"]:
+            continue
+        val_datasets[phase] = {}
+        for name, data_args in datasets.items():
+            val_datasets[phase][name] = globals().get(data_args["type"])(**data_args["args"])
+
 
     model = QualityOwl3Model(new_layers=None, lora_r=16, trainable_prompt=False).to(device)
+    model.linear_sw.requires_grad_(True)
+
+    # train_dict = torch.load("runs/2025-04-17/17:36:38/linear_sw.pth", map_location=device)
+    # model.linear_sw.load_state_dict(train_dict["linear_sw"])
+    # model.logi_indices = train_dict["logi_indices"]
+    # model.linear_sw.requires_grad_(False)
 
     # 收集所有需要优化的参数
     params_to_optimize = []
-
     
     # 添加所有LoRA参数
     if hasattr(model, 'lora_r') and model.lora_r > 0:
@@ -901,7 +995,7 @@ if __name__ == "__main__":
                 params_to_optimize.append(lora_params)
 
     # 除了要优化的参数，其余参数全部冻结
-    for name, param in model.named_parameters():
+    for name, param in model.LLM.named_parameters():
         if 'lora_' not in name and param.requires_grad:
             param.requires_grad = False
 

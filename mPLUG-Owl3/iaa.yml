@@ -1,0 +1,64 @@
+test:
+    RichHF-18K:
+        type: ImageCsvDataset
+        args:
+            dir: /media/ippl/LEXAR/datasets/RichHF-18K/Image
+            anno_file: /media/ippl/LEXAR/datasets/RichHF-18K/label/new_test.csv
+            image_key: Img
+            score_key: Score
+    
+    TAD66K:
+        type: ImageCsvDataset
+        args:
+            dir: /media/ippl/LEXAR/datasets/TAD66K/images
+            anno_file: /media/ippl/LEXAR/datasets/TAD66K/labels/merge/test.csv
+            image_key: image
+            score_key: score
+
+    APDD:
+        type: ImageCsvDataset
+        args:
+            dir: /media/ippl/LEXAR/datasets/APDD/imgs
+            anno_file: /media/ippl/LEXAR/datasets/APDD/test.csv
+            image_key: filename
+            score_key: Score
+
+    # FLICKER-AES:
+    #     type: ImageCsvDataset
+    #     args:
+    #         dir: /media/ippl/LEXAR/datasets/FLICKER-AES/Image 
+    #         anno_file: /media/ippl/LEXAR/datasets/FLICKER-AES/Label/test_workers_dataset_normalized.csv
+    #         image_key: imagePair
+    #         score_key: score
+
+    AADB:
+        type: ImageCsvDataset
+        args:
+            dir: /media/ippl/LEXAR/datasets/AADB/Image
+            anno_file: /media/ippl/LEXAR/datasets/AADB/test.csv
+            image_key: ImageFile
+            score_key: score
+
+    # AVA:
+    #     type: ImageJsonDataset
+    #     args:
+    #         dir: /media/ippl/LEXAR/datasets/
+    #         anno_file: /media/ippl/LEXAR/datasets/AVA/annotations/AVA_test.json
+
+    PARA:
+        type: ImageJsonDataset
+        args:
+            dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
+            anno_file: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data_json/for_cross_set/test/para_test.json
+
+    EVA:
+        type: ImageJsonDataset
+        args:
+            dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
+            anno_file: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data_json/all/eva_all.json  
+
+    # AesMMIT:
+    #     type: AesMmitJsonDataset
+    #     args:
+    #         dir: /media/ippl/LEXAR/datasets/AesMMIT/Image
+    #         anno_file: /media/ippl/LEXAR/datasets/AesMMIT/00-AesMLLM_labels_0128.json
