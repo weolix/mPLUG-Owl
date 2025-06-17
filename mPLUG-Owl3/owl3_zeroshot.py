@@ -23,7 +23,7 @@ import yaml
 import tqdm, time
 import pandas as pd
 from torch.utils.tensorboard import SummaryWriter
-device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 print("device: ", device)
 
 date_str = time.strftime("%Y-%m-%d", time.localtime())
@@ -37,7 +37,7 @@ class MultimodalQualityEvaluator(nn.Module):
         task="IQA",
         model_path = "iic/mPLUG-Owl3-7B-241101",
 
-    ):
+    ): 
         super().__init__()
         self.task = task
         config = transformers.AutoConfig.from_pretrained(
@@ -85,23 +85,13 @@ class MultimodalQualityEvaluator(nn.Module):
         # 准备批处理数据 (保持不变)
         batched_messages = []
         for i in range(batch_size):
-            messages = [  # IQA
+            messages = [
                 {
                     "role": "user",
                     "content": f"{media_token[media_type]}Taking into account the details and the rationality of the {media_type[:-1]}, how would you rate the quality of this {media_type[:-1]}?",
                     # "content": f"{media_token[media_type]}The infomation of the {media_type[:-1]} is as follows:{media_info[i]}, how would you rate the quality of this {media_type[:-1]}?",
                 },
-                {"role": "assistant", "content": f"The {media_type[:-1]} is"},
-            ] if self.task == "IQA" else [  # IAA
-                {
-                    "role": "system",
-                    "content": "You are a demanding art critic and need to harshly criticize the aesthetic problems of this image from a professional perspective. Avoid being gentle and point out its failures directly.",
-                },
-                {
-                    "role": "user",
-                    "content": f"{media_token[media_type]}Considering its artistic composition, color harmony, and overall visual appeal, use an adjective to describe the aesthetic quality of this {media_type[:-1]}?",
-                },
-                {"role": "assistant", "content": f"The {media_type[:-1]} is"},
+                {"role": "assistant", "content": "The quality of the image is very"},
             ]
             batched_messages.append(messages)
 
@@ -131,7 +121,6 @@ class MultimodalQualityEvaluator(nn.Module):
             # 提取 pixel_values (假设 LLMprocessor 返回字典)
             # 确保 pixel_values 是单个样本的 tensor
             if "pixel_values" in single_output:
-                    # .to(self.dev) 移动到 GPU
                 all_pixel_values.append(single_output["pixel_values"].to(self.dev))
             elif "pixel_values_videos" in single_output: # 处理视频可能的键名
                 all_pixel_values.append(single_output["pixel_values_videos"].to(self.dev))
@@ -196,14 +185,6 @@ class MultimodalQualityEvaluator(nn.Module):
              print(f"Error concatenating pixel_values: {e}. This might happen if samples have different numbers of frames.")
              # 这里需要根据你的数据和模型决定如何处理，例如填充帧或单独处理
              raise e
-
-
-        with torch.no_grad():
-            # 假设 forward_image 返回 (B*num_frames, embed_dim) 或类似结构
-            # 你可能需要根据 forward_image 的输出和模型期望的输入调整 image_embeds 的形状
-            image_embeds = self.LLM.forward_image(batched_pixel_values)
-            # 可能需要 reshape 或调整 image_embeds 以匹配模型输入格式
-
 
         # 5. 处理 media_offset
         # media_offset 的处理取决于模型如何使用它。
@@ -479,23 +460,42 @@ def evaluate(model, val_dataset, val_embed, bsz=8):
             outputs = model(image_or_video=image_or_video)
             logits = outputs.logits
 
-            last_token_logits = logits[:, -1, :] # Shape: (batch_size, vocab_size)
+            # 1. 获取最后一个 token 的 logits
+            last_token_logits = logits[:, -1, :]  # 形状: (batch_size, vocab_size)
 
-            k = 300
-            topk = torch.topk(last_token_logits, k, dim=-1) # Shapes: (batch_size, k)
-            top_k_logits, top_k_indices = topk.values, topk.indices
+            # 2. 获取 top-k 的 logits 和对应的 token 索引
+            topk_output = torch.topk(last_token_logits, 300, dim=-1)
+            top_k_logits = topk_output.values    # 形状: (batch_size, k)
+            top_k_indices = topk_output.indices  # 形状: (batch_size, k)
 
-
+            # 3. 获取模型的词嵌入层
             embedding_layer = model.LLM.get_input_embeddings()
-            top_k_embeddings = embedding_layer(top_k_indices)
-            val_embed_unsqueezed = val_embed.to(top_k_embeddings.device).unsqueeze(0).unsqueeze(0)
 
-            weights = F.cosine_similarity(top_k_embeddings, val_embed_unsqueezed, dim=-1)
-            weighted_logits = top_k_logits * weights # Shape: (batch_size, k)
-            score = torch.sum(weighted_logits, dim=-1) # Shape: (batch_size,)
+            # 4. 将 top-k 索引转换为词嵌入向量
+            top_k_embeddings = embedding_layer(top_k_indices.to(device))  # 形状: (batch_size, k, embedding_dim)
+
+            # 5. 计算 top-k 词嵌入与 val_embed 之间的余弦相似度
+            #    需要调整 val_embed 的形状以进行广播
+            val_embed_unsqueezed = val_embed.to(device).unsqueeze(0).unsqueeze(0)
+            # val_embed_unsqueezed 形状: (1, 1, embedding_dim)
+
+            weights = F.cosine_similarity(top_k_embeddings, val_embed_unsqueezed, dim=-1) # 形状: (batch_size, k)
+
+            # 6. 处理相似度权重 (根据您之前的逻辑)
+            weights_sign = torch.sign(weights)
+            # 将绝对值小于阈值的权重置零
+            weights_sign[torch.abs(weights) < 1e-3] = 0.0
+            # 乘以一个缩放因子 (这个因子是根据您之前的代码)
+            processed_weights = weights_sign * 0.125
+
+            # 7. 使用处理后的权重对 top_k_logits 进行加权
+            weighted_logits = top_k_logits.to(device) * processed_weights # 形状: (batch_size, k)
+
+            # 8. 将加权后的 logits 按样本求和，得到最终的质量分数
+            score = torch.sum(weighted_logits, dim=-1) # 形状: (batch_size,)
 
             val_pred_scores.extend(score.cpu().tolist())
-            val_gt_scores.extend(labels.cpu().tolist()) # Assumes labels is a tensor of scores
+            val_gt_scores.extend(labels.cpu().tolist())
         
         val_pred_scores = torch.tensor(val_pred_scores)
         val_gt_scores = torch.tensor(val_gt_scores)
@@ -505,6 +505,88 @@ def evaluate(model, val_dataset, val_embed, bsz=8):
 
 
     return spearmanrcc, pearsonrcc, val_pred_scores, val_gt_scores
+
+
+def q_evaluate(model, val_dataset, val_embed, bsz=2):
+    # 验证
+    model.eval()
+    qbench_tokens = [model.tokenizer.encode(t)[0] for t in ["good", "poor"]]
+    qalign_tokens = [model.tokenizer.encode(t)[0] for t in ["bad", "poor", "fair", "good", "excellent"]]
+    
+    valdataloader = DataLoader(val_dataset, batch_size=bsz, shuffle=False, num_workers=4, collate_fn=dataset.list_collate)
+    
+    with torch.no_grad():
+        val_pred_scores = []
+        qbench_val_scores = []
+        qalign_val_scores = []
+        val_gt_scores = []
+        for i, batch in enumerate(tqdm.tqdm(valdataloader, desc=f"Validation", ncols=100)):
+
+            image_or_video = batch[0]
+            labels = batch[1]
+            val_gt_scores.extend(labels.cpu().tolist())
+
+            outputs = model(image_or_video=image_or_video)
+            logits = outputs.logits
+            
+            ###################### NEW METHOD #######################
+            last_token_logits = logits[:, -1, :] # Shape: (batch_size, vocab_size)
+
+            k = 300
+            topk = torch.topk(last_token_logits, k, dim=-1) # Shapes: (batch_size, k)
+            top_k_logits, top_k_indices = topk.values, topk.indices
+
+            embedding_layer = model.LLM.get_input_embeddings()
+            top_k_embeddings = embedding_layer(top_k_indices)
+            val_embed_unsqueezed = val_embed.to(top_k_embeddings.device).unsqueeze(0).unsqueeze(0)
+
+            weights = F.cosine_similarity(top_k_embeddings, val_embed_unsqueezed, dim=-1)
+            weighted_logits = top_k_logits.to(weights.device) * weights # Shape: (batch_size, k)
+            score = torch.sum(weighted_logits, dim=-1) # Shape: (batch_size,)
+
+            val_pred_scores.extend(score.cpu().tolist())
+            ###################### NEW METHOD #######################
+            
+            ######################## Q-BENCH ########################
+            binary_logits = last_token_logits[:, qbench_tokens] # Shape: (batch_size, 2)
+
+            binary_probality = torch.softmax(binary_logits, dim=-1) # Shape: (batch_size, 2)
+            q_bench_score = binary_probality[:, 0]
+
+            qbench_val_scores.extend(q_bench_score.cpu().tolist())
+            ######################## Q-BENCH ########################
+
+            ######################## Q-ALIGN ########################
+            target_logits = last_token_logits[:, qalign_tokens] # Shape: (batch_size, len(target_words))
+            target_probality = torch.softmax(target_logits, dim=-1) # Shape: (batch_size, len(target_words))
+            target_scores = torch.sum(target_probality * torch.tensor([1, 2, 3, 4, 5], device=target_probality.device), dim=-1) # Shape: (batch_size,)
+
+            qalign_val_scores.extend(target_scores.cpu().tolist())
+            ######################## Q-ALIGN ########################
+
+        val_pred_scores = torch.tensor(val_pred_scores)
+        qbench_val_scores = torch.tensor(qbench_val_scores)
+        qalign_val_scores = torch.tensor(qalign_val_scores)
+        val_gt_scores = torch.tensor(val_gt_scores)
+        
+        spearmanrcc = spearmanr(val_pred_scores, val_gt_scores).statistic
+        pearsonrcc = pearsonr(val_pred_scores, val_gt_scores).statistic
+        qbench_spearmanrcc = spearmanr(qbench_val_scores, val_gt_scores).statistic
+        qbench_pearsonrcc = pearsonr(qbench_val_scores, val_gt_scores).statistic
+        qalign_spearmanrcc = spearmanr(qalign_val_scores, val_gt_scores).statistic
+        qalign_pearsonrcc = pearsonr(qalign_val_scores, val_gt_scores).statistic
+
+        return_dict = {
+            "srcc": spearmanrcc,
+            "plcc": pearsonrcc,
+            "qbench_srcc": qbench_spearmanrcc,
+            "qbench_plcc": qbench_pearsonrcc,
+            "qalign_srcc": qalign_spearmanrcc,
+            "qalign_plcc": qalign_pearsonrcc,
+        }
+
+
+    return return_dict
 
 
 if __name__ == "__main__":
@@ -526,7 +608,7 @@ if __name__ == "__main__":
         for name, data_args in datasets.items():
             val_datasets[phase][name] = globals().get(data_args["type"])(**data_args["args"])
 
-    model = MultimodalQualityEvaluator(TASK, model_path="iic/").to(device)
+    model = MultimodalQualityEvaluator(TASK, model_path="iic/mPLUG-Owl3-7B-241101").to(device)
 
     text_dict = {   
         "IQA" : 
@@ -559,7 +641,50 @@ if __name__ == "__main__":
     #     val_embed, topk_data = embed_fit(model, val_dataset, val_embed, bsz=8, data_path=pre_save_path)
     #     torch.save(topk_data, f"exps/topk/{name}.pt") if pre_save_path is None else None
 
-    for name, val_dataset in val_datasets["test"].items():
-        srcc, plcc, val_pred_scores, val_gt_scores = evaluate(model, val_dataset, val_embed, bsz=8)
-        print(f"{name} srcc: {srcc.statistic}, plcc: {plcc.statistic}")
+    # for name, val_dataset in val_datasets["test"].items():
+    #     srcc, plcc, val_pred_scores, val_gt_scores = evaluate(model, val_dataset, val_embed, bsz=8)
+    #     print(f"{name} srcc: {srcc.statistic}, plcc: {plcc.statistic}")
         
+    for name, val_dataset in val_datasets["test"].items():
+        results = q_evaluate(model, val_dataset, val_embed, bsz=1)
+        print(f"********{name} results:*********")
+        for key, value in results.items():
+            print(f"{key}:\t {value}")
+
+    # # 使用TopkDataset进行评估
+    # for name, val_dataset in val_datasets["test"].items():
+    #     pre_save_path = f"exps/topk/{name}.pt"
+    #     if os.path.exists(pre_save_path):
+    #         topk_data = torch.load(pre_save_path)
+    #         topk_dataset = TopkDataset(topk_data)
+    #         valdataloader = DataLoader(topk_dataset, batch_size=100, shuffle=False, collate_fn=topk_dataset.collate_fn)
+            
+    #         val_pred_scores = []
+    #         val_gt_scores = []
+            
+    #         with torch.no_grad():
+    #             for batch in tqdm.tqdm(valdataloader, desc=f"Evaluating {name}", ncols=100):
+    #                 top_k_logits, top_k_indices, labels = batch
+                    
+    #                 embedding_layer = model.LLM.get_input_embeddings()
+    #                 top_k_embeddings = embedding_layer(top_k_indices.to(model.LLM.device))
+    #                 val_embed_unsqueezed = val_embed.to(top_k_embeddings.device).unsqueeze(0).unsqueeze(0)
+                    
+    #                 weights = F.cosine_similarity(top_k_embeddings, val_embed_unsqueezed, dim=-1)
+    #                 weighted_logits = top_k_logits.to(model.LLM.device) * weights
+    #                 score = torch.sum(weighted_logits, dim=-1)
+                    
+    #                 val_pred_scores.extend(score.cpu().tolist())
+    #                 val_gt_scores.extend(labels.cpu().tolist())
+            
+    #         val_pred_scores = torch.tensor(val_pred_scores)
+    #         val_gt_scores = torch.tensor(val_gt_scores)
+            
+    #         srcc = spearmanr(val_pred_scores, val_gt_scores)
+    #         plcc = pearsonr(val_pred_scores, val_gt_scores)
+            
+    #         print(f"{name} (TopkDataset) srcc: {srcc.statistic}, plcc: {plcc.statistic}")
+    #     else:
+    #         print(f"Topk data file not found for {name}: {pre_save_path}")
+
+    # TODO 画出q align和q bench方案的散点图和分布图，判断是否不符合两边低，中间高的趋势

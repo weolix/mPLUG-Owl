@@ -22,81 +22,88 @@ train:
 test:
     koniq10k:
         type: ImageJsonDataset
+        img_type: In-the-wild
         args:
             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/koniq10k_test.json
 
     spaq:
         type: ImageJsonDataset
+        img_type: In-the-wild
         args:
             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/spaq_test.json
 
     kadid:
         type: ImageJsonDataset
+        img_type: Artificial
         args:
             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/kadid10k_test.json
     
     livec:
         type: ImageJsonDataset
+        img_type: In-the-wild
         args:
             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/livec.json
 
     agiqa3k:
         type: ImageJsonDataset
+        img_type: AI-generated
         args:
             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/agiqa3k.json
     
     live:
         type: ImageJsonDataset
+        img_type: Artificial
         args:
             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/live.json
 
     csiq:
         type: ImageJsonDataset
+        img_type: Artificial
         args:
             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/csiq.json
 
-    live-vqc:
-        type: video_dataset
-        args:
-            phase: test
-            anno_file: examplar_data_labels/LIVE_VQC/labels.txt
-            data_prefix: /home/ippl/SJB/LIVE-VQC/data
-            sample_types:
-                clip_len: 16
-                frame_interval: 2
-                t_frag: 8
-                num_clips: 1
+    # live-vqc:
+    #     type: video_dataset
+    #     args:
+    #         phase: test
+    #         anno_file: examplar_data_labels/LIVE_VQC/labels.txt
+    #         data_prefix: /home/ippl/SJB/LIVE-VQC/data
+    #         sample_types:
+    #             clip_len: 16
+    #             frame_interval: 2
+    #             t_frag: 8
+    #             num_clips: 1
 
-    maxwell:
-        type: video_dataset
-        args:
-            phase: test
-            anno_file: examplar_data_labels/MaxWell/test_labels.txt
-            data_prefix: /home/ippl/xxr/datasets/MaxWell
-            sample_types:
-                clip_len: 16
-                frame_interval: 2
-                t_frag: 8
-                num_clips: 1
+    # maxwell:
+    #     type: video_dataset
+    #     args:
+    #         phase: test
+    #         anno_file: examplar_data_labels/MaxWell/test_labels.txt
+    #         data_prefix: /home/ippl/xxr/datasets/MaxWell
+    #         sample_types:
+    #             clip_len: 16
+    #             frame_interval: 2
+    #             t_frag: 8
+    #             num_clips: 1
 
-    konvid1k:
-        type: video_dataset
-        args:
-            phase: test
-            anno_file: examplar_data_labels/KoNViD/labels.txt
-            data_prefix: /home/ippl/SJB/KoNViD_1k
-            sample_types:
-                clip_len: 16
-                frame_interval: 2
-                t_frag: 8
-                num_clips: 1
+    # konvid1k:
+    #     type: video_dataset
+    #     args:
+    #         phase: test
+    #         anno_file: examplar_data_labels/KoNViD/labels.txt
+    #         data_prefix: /home/ippl/SJB/KoNViD_1k
+    #         sample_types:
+    #             clip_len: 16
+    #             frame_interval: 2
+    #             t_frag: 8
+    #             num_clips: 1
 
     # lsvq-test:
     #     type: video_dataset
