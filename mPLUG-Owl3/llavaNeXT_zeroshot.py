@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import LlavaNextVideoForConditionalGeneration, LlavaNextVideoProcessor
+from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration
 from PIL import Image
 import os
 import yaml
@@ -12,9 +12,6 @@ from torch.utils.data import DataLoader
 import pandas as pd
 import json
 import random
-# import ffmpeg # Not directly used here, but decord uses it indirectly
-from decord import VideoReader, cpu
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # --- Dataset Collate Function (as per user's setup) ---
 def list_collate(batch):
@@ -23,57 +20,6 @@ def list_collate(batch):
     return data_items, torch.tensor(labels, dtype=torch.float32)
 
 # --- Dataset Classes (adapted from user's owl3_zeroshot.py) ---
-class video_dataset(torch.utils.data.Dataset):
-    def __init__(self, anno_file, data_prefix, phase, sample_types):
-        super().__init__()
-        self.video_infos = []
-        self.phase = phase
-        self.sample_types = sample_types 
-        self.num_frames_to_sample = self.sample_types.get("clip_len", 8) # LLaVA examples use 8 or 32
-
-        with open(anno_file, "r") as fin:
-            for line in fin:
-                try:
-                    line_split = line.strip().split(",")
-                    if len(line_split) == 4: # filename, a, t, label
-                        filename, _, _, label_str = line_split
-                    elif len(line_split) == 2: # filename, label (simplified)
-                        filename, label_str = line_split
-                    else:
-                        print(f"Skipping malformed line in {anno_file}: {line.strip()}")
-                        continue
-                    label = float(label_str)
-                    full_path = os.path.join(data_prefix, filename)
-                    if not os.path.exists(full_path):
-                        print(f"Warning: Video file not found {full_path}, skipping.")
-                        continue
-                    self.video_infos.append(dict(filename=full_path, label=label))
-                except ValueError:
-                    print(f"Skipping line due to ValueError (e.g. non-float label): {line.strip()}")
-                    continue
-
-
-    def __len__(self):
-        return len(self.video_infos)
-
-    def __getitem__(self, idx):
-        video_info_entry = self.video_infos[idx]
-        video_path = video_info_entry["filename"]
-        video_label = video_info_entry["label"]
-
-        video_frames = encode_video(video_path, num_frames=self.num_frames_to_sample)
-
-        if not video_frames:
-            print(f"Warning: Could not decode video or video is empty: {video_path}. Using a dummy frame.")
-            # Create a single black dummy frame if encoding fails
-            dummy_frame = Image.new('RGB', (224, 224), color='black')
-            video_frames = [dummy_frame]
-        
-        # Mock video_inf for consistency with user's data structure
-        mock_video_inf = {"path": video_path, "frames_sampled": len(video_frames)}
-        processed_video_data = {"info": mock_video_inf, "data": video_frames}
-        return processed_video_data, video_label
-
 class ImageJsonDataset(torch.utils.data.Dataset):
     def __init__(self, dir, anno_file):
         self.dir = dir
@@ -97,7 +43,6 @@ class ImageJsonDataset(torch.utils.data.Dataset):
             print(f"Error decoding JSON from {anno_file}")
         except FileNotFoundError:
             print(f"Annotation file not found: {anno_file}")
-
 
     def __len__(self):
         return len(self.data)
@@ -163,49 +108,17 @@ class ImageCsvDataset(torch.utils.data.Dataset):
         img_data_dict = {"info": mock_image_inf, "data": image}
         return img_data_dict, label
 
-def encode_video(video_path, num_frames=8):
-    try:
-        vr = VideoReader(video_path, ctx=cpu(0))
-        total_frames_in_video = len(vr)
-        if total_frames_in_video == 0:
-            # print(f"Warning: Video {video_path} has 0 frames.")
-            return []
-
-        if total_frames_in_video <= num_frames:
-            frame_idx = list(range(total_frames_in_video))
-        else:
-            # Uniformly sample num_frames indices
-            # np.linspace(0, total_frames_in_video - 1, num_frames).astype(int)
-            frame_idx = [int(i * (total_frames_in_video - 1) / (num_frames - 1)) if num_frames > 1 else 0 for i in range(num_frames)]
-            frame_idx = sorted(list(set(frame_idx))) # Ensure unique, sorted indices
-
-        if not frame_idx and total_frames_in_video > 0:
-            frame_idx = [0] 
-        if not frame_idx:
-            return []
-
-        frames_data = vr.get_batch(frame_idx).asnumpy()
-        frames_pil = [Image.fromarray(frame.astype('uint8')) for frame in frames_data]
-        return frames_pil
-    except RuntimeError as e: # decord can raise RuntimeError for corrupt videos
-        print(f"RuntimeError decoding video {video_path}: {e}")
-        return []
-    except Exception as e:
-        print(f"General error decoding video {video_path}: {e}")
-        return []
-# --- End Dataset Classes ---
-
 class MultimodalQualityEvaluatorLLaVANext(nn.Module):
     def __init__(
         self,
         task="IQA",
-        model_path="llava-hf/LLaVA-NeXT-Video-7B-hf",
-        local_files_only=True, # Set to True if model is downloaded and you want to force local
+        model_path="llava-hf/llama3-llava-next-8b-hf",
+        local_files_only=False,
     ):
         super().__init__()
         self.task = task
         
-        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 7 else torch.bfloat16
+        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 7 else torch.float16
         if not torch.cuda.is_available(): # CPU
             dtype = torch.float32 
             print("Warning: CUDA not available. Using CPU with torch.float32 for LLaVA-NeXT model.")
@@ -215,88 +128,75 @@ class MultimodalQualityEvaluatorLLaVANext(nn.Module):
         
         print(f"LLaVA-NeXT model will be loaded with dtype: {dtype}")
 
-        self.LLM = LlavaNextVideoForConditionalGeneration.from_pretrained(
+        self.LLM = LlavaNextForConditionalGeneration.from_pretrained(
             model_path,
             torch_dtype=dtype,
-            # low_cpu_mem_usage=True,
-            attn_implementation="sdpa", 
+            low_cpu_mem_usage=True,
             local_files_only=local_files_only,
-            device_map="auto" if torch.cuda.is_available() else None, # Use auto for CUDA, None for CPU
+            device_map="auto" if torch.cuda.is_available() else None,
         )
 
-        self.LLMprocessor = LlavaNextVideoProcessor.from_pretrained(model_path, local_files_only=local_files_only, patch_size=14, use_fast=True)
+        self.LLMprocessor = LlavaNextProcessor.from_pretrained(
+            model_path, 
+            local_files_only=local_files_only
+        )
         self.tokenizer = self.LLMprocessor.tokenizer
 
-    def _prepare_prompt_and_media(self, data_item):
-        media_data = data_item["data"]
-        is_video = isinstance(media_data, list) and all(isinstance(frame, Image.Image) for frame in media_data)
+    def _prepare_prompt_and_image(self, data_item):
+        image_data = data_item["data"]
         
-        media_type_placeholder = "video" if is_video else "image"
-        media_type_str = "video" if is_video else "image"
-
         if self.task == "IQA":
-            user_prompt_text = f"Taking into account the details and the rationality of the {media_type_str}, how would you rate the quality of this {media_type_str}?"
+            user_prompt_text = "Taking into account the details and the rationality of the image, how would you rate the quality of this image?"
         elif self.task == "IAA":
-            user_prompt_text = f"Considering its artistic composition, color harmony, and overall visual appeal, use an adjective to describe the aesthetic quality of this {media_type_str}?"
+            user_prompt_text = "Considering its artistic composition, color harmony, and overall visual appeal, use an adjective to describe the aesthetic quality of this image?"
         else:
             raise ValueError(f"Unknown task: {self.task}")
 
-        # Structured content for the user's turn.
-        # LLaVA README example: [{"type": "text", "text": "Why is this video funny?"}, {"type": "video"}]
-        # Let's try media placeholder first, then text, as <image> usually precedes query.
+        # Structured content for the user's turn
         structured_user_content = [
-            {"type": media_type_placeholder}, 
+            {"type": "image"},
             {"type": "text", "text": user_prompt_text}
         ]
         
         conversation_for_sample = [{"role": "user", "content": structured_user_content}]
         
-
         prompt_base = self.LLMprocessor.apply_chat_template(
             conversation_for_sample,
             tokenize=False,
             add_generation_prompt=True
         )
 
-        final_prompt = prompt_base + f"The quality of the {media_type_str} is quite"
+        final_prompt = prompt_base + "The quality of the image is quite"
         
-        current_image = media_data if not is_video else None
-        current_video = media_data if is_video else None
-        
-        return final_prompt, current_image, current_video
+        return final_prompt, image_data
 
     def processor(self, data_and_info_batch):
-        batch_prompts, batch_images, batch_videos = [], [], []
-        has_any_image, has_any_video = False, False
+        batch_prompts, batch_images = [], []
 
         for data_item in data_and_info_batch:
-            prompt, image, video = self._prepare_prompt_and_media(data_item)
+            prompt, image = self._prepare_prompt_and_image(data_item)
             batch_prompts.append(prompt)
             batch_images.append(image)
-            batch_videos.append(video)
-            if image is not None: has_any_image = True
-            if video is not None: has_any_video = True
-
-        images_arg = batch_images if has_any_image else None
-        videos_arg = batch_videos if has_any_video else None
         
         inputs = self.LLMprocessor(
-            text=batch_prompts, images=images_arg, videos=videos_arg,
-            padding=True, return_tensors="pt"
+            text=batch_prompts, 
+            images=batch_images,
+            padding=True, 
+            return_tensors="pt"
         )
         return inputs
 
-    def forward(self, image_or_video=None, **args):
-        if image_or_video is None:
-            raise ValueError("image_or_video_batch must be provided.")
+    def forward(self, image_batch=None, **args):
+        if image_batch is None:
+            raise ValueError("image_batch must be provided.")
 
-        batched_inputs = self.processor(image_or_video)
+        batched_inputs = self.processor(image_batch)
         # Move tensors to the model's device
         device = self.dev
         for k, v in batched_inputs.items():
             if isinstance(v, torch.Tensor):
                 batched_inputs[k] = v.to(device)
-            elif isinstance(v, list) and all(isinstance(i, torch.Tensor) for i in v): # For potential list of tensors
+            elif isinstance(v, list) and all(isinstance(i, torch.Tensor) for i in v):
                  batched_inputs[k] = [i.to(device) for i in v]
         
         outputs = self.LLM(**batched_inputs)
@@ -306,7 +206,7 @@ class MultimodalQualityEvaluatorLLaVANext(nn.Module):
     def dev(self):
         return next(self.LLM.parameters()).device
 
-def evaluate_iqa_llava(model, val_dataset, val_embed, q_bench_good_poor_tokens, bsz=8, device_str="cuda:0"):
+def evaluate_iqa_llava_next(model, val_dataset, val_embed, q_bench_good_poor_tokens, bsz=8, device_str="cuda:0"):
     model.eval()
     valdataloader = DataLoader(val_dataset, batch_size=bsz, shuffle=False, num_workers=min(4, os.cpu_count() // 2 if os.cpu_count() else 1), collate_fn=list_collate)
     
@@ -314,16 +214,16 @@ def evaluate_iqa_llava(model, val_dataset, val_embed, q_bench_good_poor_tokens, 
 
     with torch.no_grad():
         for i, batch in enumerate(tqdm.tqdm(valdataloader, desc="LLaVA-NeXT Validation", ncols=100, disable=None)):
-            image_or_video_data_batch, labels = batch[0], batch[1]
-            if not image_or_video_data_batch: continue # Skip if batch is empty
+            image_data_batch, labels = batch[0], batch[1]
+            if not image_data_batch: continue # Skip if batch is empty
 
-            outputs = model(image_or_video_batch=image_or_video_data_batch)
+            outputs = model(image_batch=image_data_batch)
             logits = outputs.logits.to(torch.float32) 
 
             last_token_logits = logits[:, -1, :]
             
             # --- Top-k Embeddings Method ---
-            k = 100
+            k = 300
             topk_results = torch.topk(last_token_logits, k, dim=-1)
             top_k_logits, top_k_indices = topk_results.values, topk_results.indices
 
@@ -339,9 +239,6 @@ def evaluate_iqa_llava(model, val_dataset, val_embed, q_bench_good_poor_tokens, 
             # --- Q-Bench Method (good/poor tokens) ---
             if q_bench_good_poor_tokens:
                 good_token_id, poor_token_id = q_bench_good_poor_tokens
-                # Ensure selected_tokens are valid indices for last_token_logits
-                # Create a tensor of these specific token IDs for gathering
-                # Check if token IDs are within the vocab size
                 vocab_size = last_token_logits.shape[-1]
                 if good_token_id < vocab_size and poor_token_id < vocab_size:
                     q_bench_token_ids = torch.tensor([good_token_id, poor_token_id], device=last_token_logits.device).long()
@@ -350,11 +247,8 @@ def evaluate_iqa_llava(model, val_dataset, val_embed, q_bench_good_poor_tokens, 
                     q_bench_score = binary_probability[:, 0] # Probability of "good"
                     qbench_val_scores.extend(q_bench_score.cpu().tolist())
                 else:
-                    # Append a default/neutral score or handle as error if token IDs are out of bounds
-                    # For simplicity, appending 0.5 (neutral) if IDs are bad, or you could skip.
                     print(f"Warning: Q-Bench token IDs ({good_token_id}, {poor_token_id}) out of vocab size ({vocab_size}). Appending neutral score.")
                     qbench_val_scores.extend([0.5] * last_token_logits.shape[0])
-
 
             val_gt_scores.extend(labels.cpu().tolist())
         
@@ -385,9 +279,8 @@ def evaluate_iqa_llava(model, val_dataset, val_embed, q_bench_good_poor_tokens, 
         results_dict["plcc_topk"] = 0.0
 
     # Calculate for Q-Bench method
-    if qbench_val_scores: # Ensure qbench_val_scores were populated
+    if qbench_val_scores:
         qbench_val_scores_tensor = torch.tensor(qbench_val_scores, dtype=torch.float32)
-        # Ensure qbench_val_scores has same length as gt_scores before filtering
         if len(qbench_val_scores_tensor) == len(val_gt_scores_tensor):
             valid_indices_qbench = ~torch.isnan(qbench_val_scores_tensor) & ~torch.isinf(qbench_val_scores_tensor)
             if not torch.all(valid_indices_qbench):
@@ -413,7 +306,7 @@ def evaluate_iqa_llava(model, val_dataset, val_embed, q_bench_good_poor_tokens, 
         results_dict["srcc_qbench"] = 0.0
         results_dict["plcc_qbench"] = 0.0
         
-    return results_dict, val_pred_scores_topk, val_gt_scores # Return only topk preds for now, or adjust as needed
+    return results_dict, val_pred_scores_topk, val_gt_scores
 
 if __name__ == "__main__":
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -423,67 +316,17 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     TASK = "IQA" 
-    LLAVA_MODEL_PATH = "/media/ippl/LEXAR/Qwen/LLaVA-NeXT-Video-7B-hf"
-    # Set to True if you have the model downloaded and want to ensure it's used,
-    # or if you are offline.
-    # LOCAL_FILES_ONLY = True # Example: if model is in ~/.cache/huggingface/hub
-    LOCAL_FILES_ONLY = False # Default: try to download if not present
+    LLAVA_MODEL_PATH = "/media/ippl/LEXAR/Qwen/lama3-llava-next-8b-hf"  # LLaVA-NeXT model path
+    LOCAL_FILES_ONLY = False
 
     YML_FILE_NAME = "iqa.yml" if TASK == "IQA" else "iaa.yml"
     
-    # --- Create dummy data and config if not present ---
-    sample_data_dir = "./sample_llava_data"
-    sample_img_dir = os.path.join(sample_data_dir, "images")
-    sample_vid_dir = os.path.join(sample_data_dir, "videos") # For video dataset example
-    
-    if not os.path.exists(YML_FILE_NAME):
-        print(f"'{YML_FILE_NAME}' not found. Creating dummy config and data in '{sample_data_dir}'.")
-        os.makedirs(sample_img_dir, exist_ok=True)
-        # os.makedirs(sample_vid_dir, exist_ok=True) # If testing video
-
-        try:
-            Image.new('RGB', (224, 224), color = 'red').save(os.path.join(sample_img_dir, "dummy1.jpg"))
-            Image.new('RGB', (224, 224), color = 'blue').save(os.path.join(sample_img_dir, "dummy2.jpg"))
-        except Exception as e:
-            print(f"Could not create dummy images: {e}")
-
-        dummy_anno_content = {
-            "files": [
-                {"image": "dummy1.jpg", "score": 0.8},
-                {"image": "dummy2.jpg", "score": 0.3}
-            ]
-        }
-        sample_anno_json_path = os.path.join(sample_data_dir, "sample_anno.json")
-        with open(sample_anno_json_path, "w") as f:
-            json.dump(dummy_anno_content, f)
-        
-        dummy_yml_content = f"""
-test:
-  sample_image_dataset:
-    type: ImageJsonDataset
-    args:
-      dir: "{sample_img_dir}" # Use absolute or correct relative path
-      anno_file: "{sample_anno_json_path}"
-#  sample_video_dataset: # Example for video
-#    type: video_dataset
-#    args:
-#      data_prefix: "{sample_vid_dir}"
-#      anno_file: "{os.path.join(sample_data_dir, "sample_video_anno.txt")}" # Create this file
-#      phase: "test"
-#      sample_types: {{"clip_len": 8}}
-"""
-        with open(YML_FILE_NAME, "w") as f:
-            f.write(dummy_yml_content)
-        print(f"Created dummy '{YML_FILE_NAME}' and sample data.")
-        # if testing video, create dummy sample_video_anno.txt:
-        # e.g. dummy_video.mp4,0.7 (and place a dummy_video.mp4 in sample_vid_dir)
-
     # --- Load dataset configuration ---
     try:
         with open(YML_FILE_NAME, "r") as f:
             opt = yaml.safe_load(f)
     except FileNotFoundError:
-        print(f"FATAL: YAML configuration file '{YML_FILE_NAME}' not found even after attempting to create a dummy. Exiting.")
+        print(f"FATAL: YAML configuration file '{YML_FILE_NAME}' not found. Please create it with your dataset configurations.")
         exit()
     except yaml.YAMLError as e:
         print(f"FATAL: Error parsing YAML file '{YML_FILE_NAME}': {e}. Exiting.")
@@ -515,23 +358,18 @@ test:
         print("No valid test datasets loaded. Exiting.")
         exit()
 
-    print("Loading LLaVA-NeXT-Video model...")
+    print("Loading LLaVA-NeXT model...")
     llava_model = MultimodalQualityEvaluatorLLaVANext(TASK, model_path=LLAVA_MODEL_PATH, local_files_only=LOCAL_FILES_ONLY)
-    # .to(device) is not strictly needed here if device_map="auto" is used and model is large.
-    # For smaller models or single GPU, .to(device) is fine.
-    # If device_map="auto", the model's parameters are already on the correct devices.
-    # We will move inputs to model.dev in the forward pass.
     print(f"Model loaded. Primary parameter device: {llava_model.dev}")
-
 
     text_dict_for_task = {
         "IQA": {
-            "goodtext": "perfect superb outstanding excellent fantastic stunning phenomenal brilliant magnificent amazing remarkable beautiful awesome breathtaking great good decent fine sharp clear suitable vibrant rich vivid bright colorful",
-            "badtext": "bad terrible awful poor horrible disappointing unacceptable inadequate deficient blurry fuzzy compromised chaotic distorted weak mediocre sub lacking unclear dark noisy low problematic insufficient"
+            "goodtext": " perfect superb outstanding excellent fantastic stunning phenomenal brilliant magnificent amazing remarkable beautiful awesome breathtaking great good decent fine sharp clear suitable vibrant rich vivid bright colorful",
+            "badtext": " bad terrible awful poor horrible disappointing unacceptable inadequate deficient blurry fuzzy compromised chaotic distorted weak mediocre sub lacking unclear dark noisy low problematic insufficient"
         },
         "IAA": {
-            "goodtext": "beautiful stunning enchanting harmonious artistic pleasing exquisite elegant graceful balanced vibrant evocative poignant serene sublime picturesque appealing striking gorgeous charming delightful sophisticated",
-            "badtext": "mediocre poorly dull bland chaotic displeasing lacking amateur overly subdued monotonous average cluttered uninspired unpleasant discordant garish mundane tacky glaring simplistic flat"
+            "goodtext": " beautiful stunning enchanting harmonious artistic pleasing exquisite elegant graceful balanced vibrant evocative poignant serene sublime picturesque appealing striking gorgeous charming delightful sophisticated",
+            "badtext": " mediocre poorly dull bland chaotic displeasing lacking amateur overly subdued monotonous average cluttered uninspired unpleasant discordant garish mundane tacky glaring simplistic flat"
         }
     }
     
@@ -557,13 +395,10 @@ test:
     # For Q-Bench style evaluation with LLaVA
     q_bench_good_poor_token_ids = None
     try:
-        # LLaVA tokenizer might not give single tokens for "good"/"poor".
-        # This is a simple attempt; might need refinement based on LLaVA's vocab.
         good_token_id = llava_model.tokenizer.encode("good", add_special_tokens=False)
         poor_token_id = llava_model.tokenizer.encode("poor", add_special_tokens=False)
 
-        if good_token_id and poor_token_id: # Check if encoding returned anything
-            # Take the first token if multiple are returned (common for words not in vocab as single units)
+        if good_token_id and poor_token_id:
             good_id = good_token_id[0]
             poor_id = poor_token_id[0]
             q_bench_good_poor_token_ids = (good_id, poor_id)
@@ -574,15 +409,14 @@ test:
     except Exception as e:
         print(f"Warning: Error encoding 'good'/'poor' for LLaVA Q-Bench: {e}. Q-Bench scores might be disabled.")
 
-
-    batch_size = 1 # Start with 1 for LLaVA-7B, increase if memory allows
+    batch_size = 1 # Start with 1 for LLaVA-8B, increase if memory allows
     for name, current_val_dataset in val_datasets_dict.items():
         print(f"\nEvaluating on dataset: {name} (Size: {len(current_val_dataset)})")
         if len(current_val_dataset) == 0:
             print(f"Dataset {name} is empty. Skipping.")
             continue
             
-        results_dict, _, _ = evaluate_iqa_llava(
+        results_dict, _, _ = evaluate_iqa_llava_next(
             llava_model, current_val_dataset, val_embed_for_scoring, 
             q_bench_good_poor_tokens=q_bench_good_poor_token_ids,
             bsz=batch_size, device_str=selected_device_str
@@ -603,8 +437,3 @@ test:
             print(f"  PLCC (Q-Bench): N/A")
 
     print("\nEvaluation finished.")
-
-#######################################################################################
-    # from owl3_zeroshot import get_top_logits
-
-    # get_top_logits("/home/ippl/xxr/mPLUG-Owl/mPLUG-Owl3/assets/testimg", llava_model, batch_size=1, topk=10)

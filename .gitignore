@@ -4,7 +4,9 @@ __pycache__
 *.pyc
 *.so
 scripts/data_prepare/data
-
+mPLUG-Owl2
+mPLUG-Owl
+*exps
 #Megatron
 megatron/fused_kernels/build/
 evaluation_results/
@@ -41,3 +43,4 @@ mPLUG-Owl3/iic/mPLUG-Owl3-7B-240728/
 mPLUG-Owl3/runs
 mPLUG-Owl3/iic/
 mPLUG-Owl3/zhongxing
+mPLUG-Owl3/assets/

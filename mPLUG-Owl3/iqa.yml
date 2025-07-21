@@ -6,75 +6,109 @@ train:
             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/train/koniq10k_train.json
 
-    # spaq:
-    #     type: ImageJsonDataset
-    #     args:
-    #         dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
-    #         anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/train/spaq_train.json
+#     spaq:
+#         type: ImageJsonDataset
+#         args:
+#             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
+#             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/train/spaq_train.json
 
-    # kadid:
-    #     type: ImageJsonDataset
-    #     args:
-    #         dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
-    #         anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/train/kadid10k_train.json
+#     kadid:
+#         type: ImageJsonDataset
+#         args:
+#             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
+#             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/train/kadid10k_train.json
+
+    
+#     vcip_challenge:
+#         type: ImageCsvDataset
+#         img_type: In-the-wild
+#         args:
+#             dir: /home/ippl/xxr/VCIP/EQ420_image
+#             anno_file: /home/ippl/xxr/VCIP/Labels/mos_fold_train.csv
+#             image_key: image_name
+#             score_key: mos
 
 
 test:
-    koniq10k:
-        type: ImageJsonDataset
-        img_type: In-the-wild
-        args:
-            dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
-            anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/koniq10k_test.json
+#     koniq10k:
+#         type: ImageJsonDataset
+#         img_type: In-the-wild
+#         args:
+#             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
+#             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/koniq10k_test.json
 
-    spaq:
-        type: ImageJsonDataset
-        img_type: In-the-wild
-        args:
-            dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
-            anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/spaq_test.json
 
-    kadid:
-        type: ImageJsonDataset
-        img_type: Artificial
-        args:
-            dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
-            anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/kadid10k_test.json
+#     spaq:
+#         type: ImageJsonDataset
+#         img_type: In-the-wild
+#         args:
+#             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
+#             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/spaq_test.json
+
+#     kadid:
+#         type: ImageJsonDataset
+#         img_type: Artificial
+#         args:
+#             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
+#             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/kadid10k_test.json
     
-    livec:
-        type: ImageJsonDataset
-        img_type: In-the-wild
-        args:
-            dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
-            anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/livec.json
+#     livec:
+#         type: ImageJsonDataset
+#         img_type: In-the-wild
+#         args:
+#             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
+#             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/livec.json
 
-    agiqa3k:
-        type: ImageJsonDataset
-        img_type: AI-generated
-        args:
-            dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
-            anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/agiqa3k.json
+#     agiqa3k:
+#         type: ImageJsonDataset
+#         img_type: AI-generated
+#         args:
+#             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
+#             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/agiqa3k.json
     
-    live:
-        type: ImageJsonDataset
-        img_type: Artificial
-        args:
-            dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
-            anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/live.json
+#     live:
+#         type: ImageJsonDataset
+#         img_type: Artificial
+#         args:
+#             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
+#             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/live.json
 
-    csiq:
-        type: ImageJsonDataset
-        img_type: Artificial
-        args:
-            dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
-            anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/csiq.json
+#     csiq:
+#         type: ImageJsonDataset
+#         img_type: Artificial
+#         args:
+#             dir: /home/ippl/pxf/Diff-Plugin-modified/Diff-Plugin/CrossSet_IQA/data
+#             anno_file: /home/ippl/zach/workspace/G-IQA/data_json/for_cross_set/test/csiq.json
+
+
+    # VCIP_IMQA:
+    #     type: ImageCsvDataset
+    #     img_type: In-the-wild
+    #     args:
+    #         dir: /home/ippl/fwq/VCIP_IMQA-deqa-lora/Data-DeQA-Score/EQ420_image
+    #         anno_file: /home/ippl/fwq/VCIP_IMQA-deqa-lora/Data-DeQA-Score/Labels/mos_fold_val.csv
+    #         image_key: image_name
+    #         score_key: mos
+    
+
+    # konvid1k:
+    #     type: video_dataset
+    #     args:
+    #         phase: test
+    #         anno_file: examplar_data_labels/KoNViD/labels.txt
+    #         data_prefix: /home/ippl/datasets
+    #         sample_types:
+    #             clip_len: 16
+    #             frame_interval: 2
+    #             t_frag: 8
+    #             num_clips: 1
 
     # live-vqc:
     #     type: video_dataset
     #     args:
     #         phase: test
     #         anno_file: examplar_data_labels/LIVE_VQC/labels.txt
-    #         data_prefix: /home/ippl/SJB/LIVE-VQC/data
+    #         data_prefix: /home/ippl/datasets/LIVE-VQC/data
     #         sample_types:
     #             clip_len: 16
     #             frame_interval: 2
@@ -86,46 +120,34 @@ test:
     #     args:
     #         phase: test
     #         anno_file: examplar_data_labels/MaxWell/test_labels.txt
-    #         data_prefix: /home/ippl/xxr/datasets/MaxWell
+    #         data_prefix: /home/ippl/datasets/MaxWell
     #         sample_types:
     #             clip_len: 16
     #             frame_interval: 2
     #             t_frag: 8
     #             num_clips: 1
 
-    # konvid1k:
-    #     type: video_dataset
-    #     args:
-    #         phase: test
-    #         anno_file: examplar_data_labels/KoNViD/labels.txt
-    #         data_prefix: /home/ippl/SJB/KoNViD_1k
-    #         sample_types:
-    #             clip_len: 16
-    #             frame_interval: 2
-    #             t_frag: 8
-    #             num_clips: 1
+    lsvq-test:
+        type: video_dataset
+        args:
+            phase: test
+            anno_file: examplar_data_labels/LSVQ/test_labels.txt
+            data_prefix: /home/ippl/datasets/LSVQ/videos
+            sample_types:
+                clip_len: 16
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1  
 
-    # lsvq-test:
-    #     type: video_dataset
-    #     args:
-    #         phase: test
-    #         anno_file: examplar_data_labels/LSVQ/test_labels.txt
-    #         data_prefix: /home/ippl/datasets/LSVQ/videos
-    #         sample_types:
-    #             clip_len: 16
-    #             frame_interval: 2
-    #             t_frag: 8
-    #             num_clips: 1  
-
-    # lsvq-1080p:
-    #     type: video_dataset
-    #     args:
-    #         phase: test
-    #         anno_file: /home/ippl/datasets/LSVQ/labels_1080p.txt
-    #         data_prefix: /home/ippl/datasets/LSVQ/videos
-    #         sample_types:
-    #             clip_len: 16
-    #             frame_interval: 2
-    #             t_frag: 8
-    #             num_clips: 1
+    lsvq-1080p:
+        type: video_dataset
+        args:
+            phase: test
+            anno_file: /home/ippl/datasets/LSVQ/labels_1080p.txt
+            data_prefix: /home/ippl/datasets/LSVQ/videos
+            sample_types:
+                clip_len: 16
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
 

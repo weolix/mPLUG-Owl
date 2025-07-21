@@ -1,3 +1,4 @@
+# use env: /root/anaconda3/bin/python
 from copy import deepcopy
 import pandas as pd
 import tqdm
@@ -487,8 +488,12 @@ class QualityOwl3Model(nn.Module):
     
 
     def processor(self, data_and_info):
-        image_or_video = [d["data"] for d in data_and_info]
-        media_info = [d["info"] for d in data_and_info]
+        if not isinstance(data_and_info, list) and isinstance(data_and_info, dict):
+            image_or_video = data_and_info["data"]
+            media_info = data_and_info["info"]
+        elif isinstance(data_and_info, list) and isinstance(data_and_info[0], dict):
+            image_or_video = [d["data"] for d in data_and_info]
+            media_info = [d["info"] for d in data_and_info]
         media_type = "images" if isinstance(image_or_video[0], Image.Image) else "videos"
         batch_size = len(image_or_video)
         media_token = {"images": "<|image|>", "videos": "<|video|>"}
@@ -705,6 +710,7 @@ class ImageJsonDataset(torch.utils.data.Dataset):
 
 
     def __len__(self):
+        # return 100
         return len(self.data)
 
     def __getitem__(self, idx):
@@ -755,6 +761,90 @@ def encode_video(video_path, num_frames=16, random_sampling=True):
     frames = [Image.fromarray(v.astype('uint8')) for v in frames]
     return frames
 
+
+def cosine_weighted_loss(model, batch, val_embed, device):
+    image_or_video = batch[0]
+    labels = batch[1].to(device)
+
+    outputs = model(image_or_video=image_or_video)
+    logits = outputs.logits  # (bsz, seq_len, vocab_size)
+    last_token_logits = logits[:, -1, :]  # (bsz, vocab_size)
+
+    k = 100
+    topk = torch.topk(last_token_logits, k, dim=-1)
+    top_k_logits, top_k_indices = topk.values, topk.indices  # (bsz, k)
+
+    embedding_layer = model.LLM.get_input_embeddings()
+    top_k_embeddings = embedding_layer(top_k_indices)  # (bsz, k, dim)
+    val_embed_unsqueezed = val_embed.to(top_k_embeddings.device).unsqueeze(0).unsqueeze(0)  # (1,1,dim)
+
+    weights = F.cosine_similarity(top_k_embeddings, val_embed_unsqueezed, dim=-1)  # (bsz, k)
+    weighted_logits = top_k_logits * weights  # (bsz, k)
+    score = torch.sum(weighted_logits, dim=-1)  # (bsz,)
+
+    loss = plcc_loss(score, labels)
+    return loss, score, labels
+
+def train_lora_cosine(
+    model, 
+    train_dataset, 
+    val_dataset, 
+    val_embed, 
+    optimizer, 
+    device, 
+    epochs=5, 
+    bsz=8, 
+    writer=None
+):
+    from torch.utils.data import DataLoader
+    import tqdm
+
+    for name, param in model.named_parameters():
+        if 'lora_' in name:
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+
+    for epoch in range(epochs):
+        model.train()
+        dataloader = DataLoader(train_dataset, batch_size=bsz, shuffle=True, num_workers=4, collate_fn=train_dataset.collate_fn)
+        total_loss = 0
+        pred_scores = []
+        gt_scores = []
+        for i, batch in enumerate(tqdm.tqdm(dataloader, desc=f"Epoch {epoch+1}")):
+            optimizer.zero_grad()
+            loss, score, labels = cosine_weighted_loss(model, batch, val_embed, device)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+            pred_scores.extend(score.detach().cpu().tolist())
+            gt_scores.extend(labels.detach().cpu().tolist())
+            if writer:
+                writer.add_scalar("Loss/step", loss.item(), epoch * len(dataloader) + i)
+            torch.cuda.empty_cache()
+        print(f"Epoch {epoch+1} avg loss: {total_loss/len(dataloader):.4f}")
+
+        # 验证
+        model.eval()              
+        for nm, val_data in val_dataset.items():
+            print(f"Validating on {nm} dataset...")  
+            val_pred, val_gt = [], []
+            val_loader = DataLoader(val_data, batch_size=bsz, shuffle=False, num_workers=2, collate_fn=val_data.collate_fn,drop_last=True)
+            with torch.no_grad():
+                for batch in tqdm.tqdm(val_loader, desc="Validation"):
+                    _, score, labels = cosine_weighted_loss(model, batch, val_embed, device)
+                    val_pred.extend(score.squeeze().cpu().tolist())
+                    val_gt.extend(labels.cpu().tolist())
+            from scipy.stats import spearmanr, pearsonr
+            srcc = spearmanr(val_pred, val_gt).statistic
+            plcc = pearsonr(val_pred, val_gt).statistic
+            print(f"Validation: SRCC={srcc:.4f}, PLCC={plcc:.4f}")
+            if writer:
+                writer.add_scalar(f"Validation/{nm}_SRCC", srcc, epoch)
+                writer.add_scalar(f"Validation/{nm}_PLCC", plcc, epoch)
+
+
+
 def trainq(model, val_datasets, optimizer, bsz=4):
 
     # 训练模型
@@ -765,7 +855,7 @@ def trainq(model, val_datasets, optimizer, bsz=4):
         model.eval()
         with torch.no_grad():
             for name, data in val_datasets["train"].items():
-                dataloader = DataLoader(data, batch_size=bsz, shuffle=True, num_workers=8, collate_fn=dataset.list_collate)
+                dataloader = DataLoader(data, batch_size=bsz, shuffle=True, num_workers=8, collate_fn=data.collate_fn)
                 for batch in tqdm.tqdm(dataloader, ncols=100):
                     image_or_video = batch[0]
                     labels = batch[1].to(model.LLM.device)
@@ -797,7 +887,7 @@ def trainq(model, val_datasets, optimizer, bsz=4):
             optimizer_sw.zero_grad()
             pred_scores = model.linear_sw(logits_top300)
             l1_norm = sum(p.abs().sum() for p in model.linear_sw.parameters())
-            loss = plcc_loss(pred_scores.squeeze(-1), scores_all)
+            loss = plcc_loss(pred_scores, scores_all.float())
             loss.backward()
             optimizer_sw.step()
             scheduler_sw.step()
@@ -952,6 +1042,53 @@ def evaluate(model, val_dataset, bsz=4):
     return spearmanrcc, pearsonrcc
 
 
+class aigc_video_dataset(torch.utils.data.Dataset):
+    def __init__(self, anno_file, data_prefix, phase, sample_types):
+        super().__init__()
+
+        self.data_prefix = data_prefix
+        self.sample_types = sample_types
+        self.samplers = {}
+
+        # 使用pandas库读取csv
+        self.df = pd.read_csv(anno_file)
+
+    def __len__(self):
+        return len(self.df)
+        return 100
+
+    def __getitem__(self, idx):
+        video = self.df.iloc[idx]
+        video_path = os.path.join(self.data_prefix, video["video_name"])
+        prompt = video["Prompt"]
+        MOS = video.get("Overall_MOS", 0.0)
+        metadata = ffmpeg.probe(video_path)
+        meta_stream = metadata["streams"][0]
+
+        video_inf = {
+            # "file size": f"{os.path.getsize(metadata["format"]["filename"])/1048576 :.2f}MB",
+            # "duration": f"{float(meta_stream["duration"]):.0f}s",
+            "resolution": f"{meta_stream['width']}x{meta_stream['height']}",
+            # "frame rate": f"{eval(meta_stream['avg_frame_rate']):.2f}fps",
+            # "bit rate": f"{int(meta_stream['bit_rate'])//1000}Kbps",
+            # "codec": meta_stream["codec_name"],
+            "prompt": prompt,
+            "video_name": video["video_name"],
+        }
+
+        video_frames = encode_video(video_path, num_frames=self.sample_types["clip_len"])
+        video = {"info": video_inf, "data": video_frames, "MOS": MOS}
+        return video
+    
+    def collate_fn(self, batch):
+        # 批处理函数
+        video_inf = [item["info"] for item in batch]
+        video_frames = [item["data"] for item in batch]
+        video = {"info": video_inf, "data": video_frames}
+        label = torch.tensor([item["MOS"] for item in batch])
+        return video, label
+
+
 
 if __name__ == "__main__":
     device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
@@ -1008,6 +1145,20 @@ if __name__ == "__main__":
         weight_decay=0.01
     )
 
-    trainq(model, val_datasets, optimizer, bsz=8)
+    # trainq(model, val_datasets, optimizer, bsz=8)
+    from owl3_zeroshot import get_embed
+    val_embed = get_embed(model, device)
+    for nm, ds in val_datasets["train"].items():
+        train_lora_cosine(
+            model, 
+            ds, 
+            val_datasets["test"], 
+            val_embed, 
+            optimizer, 
+            device, 
+            epochs=10, 
+            bsz=4, 
+            writer=writer
+        )
 
 

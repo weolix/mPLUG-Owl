@@ -1,0 +1,29 @@
+train:
+    aigvideo_dataset:
+        type: aigc_video_dataset
+        img_type: AI-generated
+        args:
+            data_prefix: /media/ippl/LEXAR/VQualA/train
+            anno_file: /media/ippl/LEXAR/VQualA/train-csv.csv
+            phase: train
+            sample_types:
+                clip_len: 16
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
+
+
+
+test:
+    aigvideo_dataset:
+        type: aigc_video_dataset
+        img_type: AI-generated
+        args:
+            data_prefix: /media/ippl/LEXAR/VQualA/val
+            anno_file: /media/ippl/LEXAR/VQualA/val-csv.csv
+            phase: test
+            sample_types:
+                clip_len: 32
+                frame_interval: 2
+                t_frag: 8
+                num_clips: 1
