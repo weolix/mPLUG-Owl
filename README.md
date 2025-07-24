@@ -15,48 +15,6 @@ Our approach leverages mPLUG-Owl3 for zero-shot quality assessment through **Ada
 ### Overview
 The framework employs a multi-modal large language model (mPLUG-Owl3) to assess image quality without requiring task-specific training. Instead of relying on traditional fine-tuning approaches, we utilize the model's inherent language understanding capabilities to perform quality assessment through strategic prompt design and logit manipulation.
 
-### Adaptive Logit Weighting Strategy
-
-1. **Quality-aware Prompting**: We design task-specific prompts that guide the model to generate quality-related responses:
-   - **IQA (Image Quality Assessment)**: "Taking into account the details and the rationality of the image, how would you rate the quality of this image?"
-   - **IAA (Image Aesthetic Assessment)**: "Considering its artistic composition, color harmony, and overall visual appeal, use an adjective to describe the aesthetic quality of this image?"
-
-2. **Top-k Logit Extraction**: From the model's output logits at the last token position, we extract the top-k (k=100) highest probability tokens and their corresponding logit values.
-
-3. **Semantic Embedding Construction**: We construct quality-aware embeddings by:
-   - Defining positive quality words (e.g., "excellent", "superb", "outstanding", "stunning")
-   - Defining negative quality words (e.g., "poor", "terrible", "awful", "blurry")
-   - Computing mean embeddings for positive and negative word sets
-   - Creating a quality direction vector: `val_embed = positive_embed - negative_embed`
-
-4. **Adaptive Weighting**: For each top-k token:
-   - Extract token embeddings using the model's embedding layer
-   - Compute cosine similarity between token embeddings and the quality direction vector
-   - Weight the corresponding logits using these similarity scores
-   - Sum the weighted logits to obtain the final quality score
-
-### Technical Implementation
-
-The core algorithm can be summarized as:
-
-```python
-# Extract top-k logits and indices
-topk_logits, topk_indices = torch.topk(last_token_logits, k=100, dim=-1)
-
-# Get embeddings for top-k tokens
-embedding_layer = model.get_input_embeddings()
-topk_embeddings = embedding_layer(topk_indices)
-
-# Compute similarity weights
-weights = F.cosine_similarity(topk_embeddings, quality_embed, dim=-1)
-
-# Generate final quality score
-weighted_logits = topk_logits * weights
-quality_score = torch.sum(weighted_logits, dim=-1)
-```
-
-This approach enables the model to automatically focus on quality-relevant tokens in the vocabulary space, providing interpretable and effective quality assessment without requiring domain-specific training data.
-
 ## Experimental Results
 
 ### Comparison with Training-Free SOTA Methods
@@ -108,52 +66,8 @@ cd mPLUG-Owl3
 pip install -r requirements.txt
 ```
 
-### Quick Start
-
-```python
-import torch
-from modelscope import AutoConfig, AutoModel, AutoTokenizer
-from PIL import Image
-
-# Load model
-model_path = 'iic/mPLUG-Owl3-7B-241101'
-model = AutoModel.from_pretrained(
-    model_path, 
-    attn_implementation='flash_attention_2', 
-    torch_dtype=torch.bfloat16, 
-    trust_remote_code=True
-).cuda().eval()
-
-tokenizer = AutoTokenizer.from_pretrained(model_path)
-processor = model.init_processor(tokenizer)
-
-# Quality Assessment
-from mPLUG-Owl3.owl3_zeroshot import MultimodalQualityEvaluator, get_embed
-
-evaluator = MultimodalQualityEvaluator(task="IQA", model_path=model_path)
-quality_embed = get_embed(evaluator, device="cuda", TASK="IQA")
-
-# Evaluate an image
-image = Image.open("your_image.jpg").convert('RGB')
-image_data = [{"info": {"name": "test.jpg"}, "data": image}]
-
-with torch.no_grad():
-    outputs = evaluator(image_or_video=image_data)
-    logits = outputs.logits
-    # Apply adaptive logit weighting for quality score
-    # (See owl3_zeroshot.py for complete implementation)
-```
-
 ### Configuration
 
 The method supports both Image Quality Assessment (IQA) and Image Aesthetic Assessment (IAA). Configuration files are available:
 - `mPLUG-Owl3/iqa.yml` - Configuration for quality assessment datasets
 - `mPLUG-Owl3/iaa.yml` - Configuration for aesthetic assessment datasets
-
-### Implementation Details
-
-For complete implementation details, please refer to `mPLUG-Owl3/owl3_zeroshot.py` which contains:
-- `MultimodalQualityEvaluator` class for model initialization and inference
-- `get_embed()` function for creating quality-aware embeddings  
-- Dataset classes for various quality assessment benchmarks
-- Evaluation utilities and metrics computation
