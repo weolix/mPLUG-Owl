@@ -23,18 +23,50 @@ The framework employs a multi-modal large language model (mPLUG-Owl3) to assess 
 
 **Table 1: Comparison with training-free SOTA IQA methods. The best results are in bold.**
 
-| Dataset | LIVE Challenge |  | KonIQ-10k |  | AGIQA-3K |  | KADID-10k |  | SPAQ |  |
-|---------|:---------:|:---------:|:---------:|:---------:|:---------:|:---------:|:---------:|:---------:|:---------:|:---------:|
-| Method | SRCC | PLCC | SRCC | PLCC | SRCC | PLCC | SRCC | PLCC | SRCC | PLCC |
-| BIQI | 0.364 | 0.447 | 0.559 | 0.616 | 0.390 | 0.423 | 0.338 | 0.405 | 0.591 | 0.549 |
-| BLIINDS-II | 0.090 | 0.107 | 0.585 | 0.598 | 0.454 | 0.510 | 0.224 | 0.313 | 0.317 | 0.326 |
-| BRISQUE | 0.561 | 0.598 | 0.705 | 0.707 | 0.493 | 0.533 | 0.330 | 0.370 | 0.484 | 0.481 |
-| NIQE | 0.463 | 0.491 | 0.551 | 0.488 | 0.529 | 0.520 | 0.379 | 0.389 | 0.703 | 0.671 |
-| CLIP-IQA | 0.612 | 0.594 | 0.695 | 0.727 | 0.658 | 0.714 | 0.500 | 0.520 | 0.738 | 0.735 |
-| MDFS | 0.482 | 0.536 | 0.733 | 0.712 | 0.672 | 0.676 | 0.598 | 0.594 | 0.741 | 0.718 |
-| Q-Debias | 0.794 | 0.790 | 0.838 | 0.863 | 0.717 | 0.753 | 0.700 | 0.713 | 0.867 | 0.826 |
-| Dog-IQA | 0.756 | 0.752 | 0.819 | 0.811 | **0.823** | 0.797 | 0.612 | 0.624 | 0.902 | 0.897 |
-| **Ours** | **0.856** | **0.883** | **0.886** | **0.916** | 0.770 | **0.827** | **0.791** | **0.787** | **0.906** | **0.911** |
+<table>
+  <tr>
+    <th rowspan="2">Method</th> <th colspan="2">LIVE Challenge</th> <th colspan="2">KonIQ-10k</th> <th colspan="2">AGIQA-3K</th> <th colspan="2">KADID-10k</th> <th colspan="2">SPAQ</th>
+  </tr>
+  <tr>
+    <th>SRCC</th><th>PLCC</th> <th>SRCC</th><th>PLCC</th> <th>SRCC</th><th>PLCC</th> <th>SRCC</th><th>PLCC</th> <th>SRCC</th><th>PLCC</th>
+  </tr>
+  <tr>
+    <td>BIQI</td>
+    <td>0.364</td><td>0.447</td> <td>0.559</td><td>0.616</td> <td>0.390</td><td>0.423</td> <td>0.338</td><td>0.405</td> <td>0.591</td><td>0.549</td>
+  </tr>
+  <tr>
+    <td>BLIINDS-II</td>
+    <td>0.090</td><td>0.107</td> <td>0.585</td><td>0.598</td> <td>0.454</td><td>0.510</td> <td>0.224</td><td>0.313</td> <td>0.317</td><td>0.326</td>
+  </tr>
+  <tr>
+    <td>BRISQUE</td>
+    <td>0.561</td><td>0.598</td> <td>0.705</td><td>0.707</td> <td>0.493</td><td>0.533</td> <td>0.330</td><td>0.370</td> <td>0.484</td><td>0.481</td>
+  </tr>
+  <tr>
+    <td>NIQE</td>
+    <td>0.463</td><td>0.491</td> <td>0.551</td><td>0.488</td> <td>0.529</td><td>0.520</td> <td>0.379</td><td>0.389</td> <td>0.703</td><td>0.671</td>
+  </tr>
+  <tr>
+    <td>CLIP-IQA</td>
+    <td>0.612</td><td>0.594</td> <td>0.695</td><td>0.727</td> <td>0.658</td><td>0.714</td> <td>0.500</td><td>0.520</td> <td>0.738</td><td>0.735</td>
+  </tr>
+  <tr>
+    <td>MDFS</td>
+    <td>0.482</td><td>0.536</td> <td>0.733</td><td>0.712</td> <td>0.672</td><td>0.676</td> <td>0.598</td><td>0.594</td> <td>0.741</td><td>0.718</td>
+  </tr>
+  <tr>
+    <td>Q-Debias</td>
+    <td>0.794</td><td>0.790</td> <td>0.838</td><td>0.863</td> <td>0.717</td><td>0.753</td> <td>0.700</td><td>0.713</td> <td>0.867</td><td>0.826</td>
+  </tr>
+  <tr>
+    <td>Dog-IQA</td>
+    <td>0.756</td><td>0.752</td> <td>0.819</td><td>0.811</td> <td><b>0.823</b></td><td>0.797</td> <td>0.612</td><td>0.624</td> <td>0.902</td><td>0.897</td>
+  </tr>
+  <tr>
+    <td><b>Ours</b></td>
+    <td><b>0.856</b></td><td><b>0.883</b></td> <td><b>0.886</b></td><td><b>0.916</b></td> <td>0.770</td><td><b>0.827</b></td> <td><b>0.791</b></td><td><b>0.787</b></td> <td><b>0.906</b></td><td><b>0.911</b></td>
+  </tr>
+</table>
 
 </div>
 
