@@ -1,0 +1,44 @@
+# Configuration for Continual Learning IQA
+
+# Model settings
+model:
+  backbone: "resnet18"  # resnet18, mobilenet_v3_small, efficientnet_b0
+  embedding_dim: 256
+  feature_dim: 512
+  dropout_rate: 0.1
+  pretrained: true
+
+# Training settings
+training:
+  epochs: 10
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  seed: 42
+
+# Data settings
+data:
+  image_size: 224
+  pre_crop_size: 272
+  num_workers: 4
+
+# Continual learning settings
+continual_learning:
+  strategy: "naive"  # naive, ewc, l2, packnet
+  strategy_params:
+    ewc_lambda: 1000
+    fisher_estimation_samples: 200
+    l2_lambda: 0.01
+    prune_ratio: 0.2
+
+# Paths (to be overridden by command line arguments)
+paths:
+  eva_image_dir: null
+  eva_label_file: null
+  ava_image_dir: null
+  ava_label_file: null
+  save_dir: "./checkpoints"
+  log_dir: "./logs"
+
+# Device settings
+device: "auto"  # auto, cuda, cpu
